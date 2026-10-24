@@ -533,7 +533,11 @@ func (s *Server) publicSearchAPI(w http.ResponseWriter, r *http.Request) {
 		writePublicJSON(w, out)
 		return
 	}
-	matches, err := idx.v.SearchText(q)
+	public := make(map[string]bool, len(idx.pages))
+	for _, n := range idx.pages {
+		public[n.Path] = true
+	}
+	matches, err := idx.v.SearchTextFiltered(q, func(p string) bool { return public[p] })
 	if err != nil {
 		writePublicJSON(w, out)
 		return

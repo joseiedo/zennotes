@@ -2522,6 +2522,13 @@ func (v *Vault) textSearchCandidatesLocked() ([]textSearchCandidate, error) {
 }
 
 func (v *Vault) SearchText(query string) ([]TextSearchMatch, error) {
+	return v.SearchTextFiltered(query, nil)
+}
+
+// SearchTextFiltered is SearchText restricted to notes whose vault-relative
+// path keep accepts (nil keeps all). The filter runs before the 200-match cap,
+// so excluded notes can never crowd out the ones the caller may show.
+func (v *Vault) SearchTextFiltered(query string, keep func(path string) bool) ([]TextSearchMatch, error) {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
 	query = strings.TrimSpace(query)
@@ -2536,6 +2543,9 @@ func (v *Vault) SearchText(query string) ([]TextSearchMatch, error) {
 	out := []TextSearchMatch{}
 	for _, candidate := range candidates {
 		if !strings.Contains(candidate.lineLower, needle) {
+			continue
+		}
+		if keep != nil && !keep(candidate.match.Path) {
 			continue
 		}
 		out = append(out, candidate.match)

@@ -691,3 +691,19 @@ func TestPublicAssetNoteRelativeParentAndFragment(t *testing.T) {
 		}
 	}
 }
+
+// I5: the raw search cap must not crowd out public hits with private ones.
+func TestPublicSearchFindsPublicHitBehindManyPrivateMatches(t *testing.T) {
+	var b strings.Builder
+	for i := 0; i < 250; i++ {
+		b.WriteString("needle private line\n")
+	}
+	f := newPublicFixture(t, map[string]string{
+		"A-private.md": b.String(),
+		"Blog/z.md":    "needle public line\n",
+	}, map[string]publicsite.Mark{"Blog": publicsite.MarkPublic}, "")
+	r := fetchRaw(t, f.srv, apiPath("search", map[string]string{"q": "needle"}))
+	if r.Status != http.StatusOK || !strings.Contains(r.Body, `"Blog/z.md"`) || strings.Contains(r.Body, "private") {
+		t.Fatalf("search: %d %s", r.Status, r.Body)
+	}
+}
