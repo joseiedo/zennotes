@@ -102,6 +102,36 @@ describe('rewriteRenderedLinks', () => {
   })
 })
 
+describe('rewriteRenderedLinks with real renderMarkdown output', () => {
+  async function renderReal(md: string, notePath = 'Blog/post.md'): Promise<HTMLElement> {
+    const root = document.createElement('div')
+    root.innerHTML = await renderMarkdown(md)
+    rewriteRenderedLinks(root, { notePath, notes, markdown: md })
+    return root
+  }
+
+  it('requests a PDF embed without its #page fragment and keeps the fragment in the page', async () => {
+    const root = await renderReal('![[doc.pdf#page=3]]')
+    const urls = Array.from(root.querySelectorAll<HTMLElement>('[src],[href],[data-local-asset-url]'))
+      .flatMap((el) => [el.getAttribute('src'), el.getAttribute('href'), el.dataset.localAssetUrl])
+      .filter((u): u is string => !!u && u.startsWith('/_zn/api/asset'))
+    expect(urls.length).toBeGreaterThan(0)
+    for (const u of urls) {
+      const q = new URLSearchParams(u.split('?')[1]!.split('#')[0])
+      expect(q.get('href')).toBe('doc.pdf')
+    }
+    const frame = root.querySelector('iframe')
+    if (frame) expect(frame.getAttribute('src')).toMatch(/#page=3$/)
+  })
+
+  it('sends note-relative ../ asset hrefs unchanged', async () => {
+    const root = await renderReal('![](../attachments/a.png)')
+    expect(root.querySelector('img')!.getAttribute('src')).toBe(
+      '/_zn/api/asset?note=Blog%2Fpost.md&href=..%2Fattachments%2Fa.png'
+    )
+  })
+})
+
 describe('findHashTarget', () => {
   function doc(html: string): HTMLElement {
     const root = document.createElement('div')

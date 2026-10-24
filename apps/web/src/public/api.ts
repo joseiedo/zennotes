@@ -50,8 +50,13 @@ export function fetchNote(path: string): Promise<PublicNote | null> {
 
 /** URL of an asset referenced by `notePath`; `href` must be exactly as
  *  written in the note — the server matches it against the note's own refs. */
+/** The asset API URL for `href` as written in `notePath`. The server lists
+ *  asset refs without `#fragment`/`?query` (`![[doc.pdf#page=3]]` → `doc.pdf`),
+ *  so they are dropped here; callers re-append a fragment (e.g. a PDF page) to
+ *  the URL they put in the page. */
 export function assetUrl(notePath: string, href: string): string {
-  return `${API}/asset?note=${encodeURIComponent(notePath)}&href=${encodeURIComponent(href)}`
+  const path = href.split('#')[0]!.split('?')[0]!
+  return `${API}/asset?note=${encodeURIComponent(notePath)}&href=${encodeURIComponent(path)}`
 }
 
 /** The server answered 429: too many searches from this client. */

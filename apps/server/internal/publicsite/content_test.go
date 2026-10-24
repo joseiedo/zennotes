@@ -74,7 +74,7 @@ func TestExtractAssetRefs(t *testing.T) {
 	body := "![[img.png|300]]\n![a](sub/pic.jpg \"t\")\n[pdf](docs/a.pdf)\n[[Other note]]\n[web](https://x.y/a.png)\n" +
 		"<img src=\"b.gif\">\n![[draw.excalidraw]]\n[[link.excalidraw]]\n`![[nope.png]]`\n" +
 		"```\n![[nope2.png]]\n```\n[[file.pdf#page=2]]\n[[note.md]]\n![[o.excalidraw.md]]\n[[o2.excalidraw.md]]\n[x](#a) [y](//h/p.png)\n"
-	got := ExtractAssetRefs(body)
+	got := ExtractAssetRefs("post.md", body)
 	sort.Strings(got)
 	want := []string{"b.gif", "docs/a.pdf", "draw.excalidraw", "file.pdf", "img.png", "o.excalidraw.md", "sub/pic.jpg"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
@@ -115,11 +115,11 @@ func TestExtractAssetRefsNormalizesBeforeClassifying(t *testing.T) {
 		"[x](draw%2Eexcalidraw)", "![](draw%2Eexcalidraw)", "[x](draw.excalidraw/)",
 		"[x](./draw.excalidraw)", "[x](note%2Emd)", "[x](o%2Eexcalidraw%2Emd)", "<img src=\"d%2Eexcalidraw\">",
 	} {
-		if got := ExtractAssetRefs(body); len(got) != 0 {
+		if got := ExtractAssetRefs("post.md", body); len(got) != 0 {
 			t.Errorf("%q -> %v", body, got)
 		}
 	}
-	if got := ExtractAssetRefs("![[draw%2Eexcalidraw]]"); len(got) != 1 {
+	if got := ExtractAssetRefs("post.md", "![[draw%2Eexcalidraw]]"); len(got) != 1 {
 		t.Errorf("embed should count: %v", got)
 	}
 }
@@ -143,5 +143,34 @@ func TestSanitizeFrontmatterOnlyDashCloser(t *testing.T) {
 	out := SanitizeBody("---\na: 1\n...\nsecret: y\n---\nbody")
 	if strings.Contains(out, "secret") || !strings.Contains(out, "body") {
 		t.Errorf("got %q", out)
+	}
+}
+
+// I4: a "../" href is resolved against the note's folder, as ResolveAssetRef
+// does, before the vault-escape check.
+func TestExtractAssetRefsNoteRelativeParent(t *testing.T) {
+	got := ExtractAssetRefs("Blog/post.md", "![](../attachments/a.png)\n![](../../escape.png)\n<img src=\"../b.gif\">\n")
+	want := []string{"../attachments/a.png", "../b.gif"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("got %v want %v", got, want)
+	}
+	if got := ExtractAssetRefs("post.md", "![](../a.png)"); len(got) != 0 {
+		t.Errorf("root note escaping the vault: %v", got)
+	}
+	if p, ok := ResolveAssetRef("Blog/post.md", "../attachments/a.png", []string{"attachments/a.png"}); !ok || p != "attachments/a.png" {
+		t.Errorf("resolve: %q %v", p, ok)
+	}
+}
+
+// M1: refs are listed without #fragment / ?query for every syntax, matching
+// what the public client requests.
+func TestExtractAssetRefsDropsFragmentAndQuery(t *testing.T) {
+	got := ExtractAssetRefs("post.md", "![[doc.pdf#page=3]]\n[d](other.pdf#page=2)\n![](img.png?v=1)\n<img src=\"c.gif#x\">\n")
+	want := []string{"doc.pdf", "other.pdf", "img.png", "c.gif"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("got %v want %v", got, want)
+	}
+	if got := ExtractAssetRefs("Blog/post.md", "[q](?x=1) [h](#top)"); len(got) != 0 {
+		t.Errorf("query/fragment-only hrefs: %v", got)
 	}
 }

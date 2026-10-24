@@ -363,7 +363,7 @@ func (s *Server) openPublicAsset(r *http.Request) (*os.File, os.FileInfo, string
 		return nil, nil, "", false
 	}
 	listed := false
-	for _, ref := range publicsite.ExtractAssetRefs(publicsite.SanitizeBody(body)) {
+	for _, ref := range publicsite.ExtractAssetRefs(meta.Path, publicsite.SanitizeBody(body)) {
 		if ref == href {
 			listed = true
 			break

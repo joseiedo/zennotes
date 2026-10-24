@@ -255,10 +255,17 @@ func isExcalidrawName(clean string) bool {
 	return strings.HasSuffix(l, ".excalidraw") || strings.HasSuffix(l, ".excalidraw.md")
 }
 
-// ExtractAssetRefs lists the local file hrefs referenced by sanitized note
-// text, deduplicated, in first-seen order. Code is ignored. Excalidraw
-// drawings only count when embedded with ![[...]].
-func ExtractAssetRefs(sanitized string) []string {
+// ExtractAssetRefs lists the local file hrefs referenced by the sanitized text
+// of the note at notePath, deduplicated, in first-seen order, without any
+// #fragment or ?query (the public client requests them that way). Code is
+// ignored. Excalidraw drawings only count when embedded with ![[...]]. An
+// href that escapes the vault from the note's folder is dropped; "../" that
+// stays inside the vault is kept, as ResolveAssetRef resolves it.
+func ExtractAssetRefs(notePath, sanitized string) []string {
+	noteDir := ""
+	if i := strings.LastIndexByte(notePath, '/'); i >= 0 {
+		noteDir = notePath[:i]
+	}
 	spans := codeSpans(sanitized)
 	seen := map[string]bool{}
 	var out []string
@@ -274,9 +281,21 @@ func ExtractAssetRefs(sanitized string) []string {
 		if notLocalHref(h) {
 			return
 		}
+		h = stripQueryAndHash(h)
+		if h == "" {
+			return
+		}
 		// Classify on the decoded, normalized path, exactly as
-		// ResolveAssetRef will resolve it (%2E, trailing slash, ./ ...).
-		clean := posixNormalize(decodeHrefPath(h))
+		// ResolveAssetRef will resolve it (%2E, trailing slash, ./ ...,
+		// relative to the note's folder).
+		decoded := decodeHrefPath(h)
+		target := decoded
+		if strings.HasPrefix(decoded, "/") {
+			target = strings.TrimLeft(decoded, "/")
+		} else if noteDir != "" {
+			target = noteDir + "/" + decoded
+		}
+		clean := posixNormalize(target)
 		if clean == "" || escapesVault(clean) {
 			return
 		}

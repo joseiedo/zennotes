@@ -677,3 +677,17 @@ func TestRobotsDisallowsAdmin(t *testing.T) {
 		t.Fatalf("robots = %d %q", resp.Status, resp.Body)
 	}
 }
+
+func TestPublicAssetNoteRelativeParentAndFragment(t *testing.T) {
+	f := newPublicFixture(t, map[string]string{
+		"Blog/post.md":        "![](../attachments/a.png)\n\n![[doc.pdf#page=3]]\n",
+		"attachments/a.png":   string(pngBytes),
+		"attachments/doc.pdf": "%PDF-1.4 fake",
+	}, map[string]publicsite.Mark{"Blog": publicsite.MarkPublic}, "")
+	for _, href := range []string{"../attachments/a.png", "doc.pdf"} {
+		r := fetchRaw(t, f.srv, apiPath("asset", map[string]string{"note": "Blog/post.md", "href": href}))
+		if r.Status != http.StatusOK {
+			t.Errorf("%s: %d %s", href, r.Status, r.Body)
+		}
+	}
+}
