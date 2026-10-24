@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/ZenNotes/zennotes/apps/server/internal/config"
+	"github.com/ZenNotes/zennotes/apps/server/internal/publicsite"
 	"github.com/ZenNotes/zennotes/apps/server/internal/vault"
 	"github.com/ZenNotes/zennotes/apps/server/internal/watcher"
 	"github.com/coder/websocket"
@@ -43,7 +44,8 @@ type Server struct {
 	sessions        *sessionStore
 	loginLimiter    *attemptLimiter
 	wsRejectLimiter *attemptLimiter
-	loggedOrigins   sync.Map // origin -> struct{}; dedupes CORS-rejection logs
+	loggedOrigins   sync.Map          // origin -> struct{}; dedupes CORS-rejection logs
+	publicRules     *publicsite.Store // nil unless cfg.PublicSite
 }
 
 func init() {
@@ -63,7 +65,12 @@ func New(v *vault.Vault, w *watcher.Watcher, static fs.FS, cfg config.Config) *S
 	if cfg.PersistSessions {
 		sessionsPath = config.SessionsPath()
 	}
+	var rules *publicsite.Store
+	if cfg.PublicSite {
+		rules = publicsite.NewStore(config.PublicSitePath())
+	}
 	return &Server{
+		publicRules:     rules,
 		Vault:           v,
 		Watcher:         w,
 		Static:          static,
@@ -178,6 +185,11 @@ func (s *Server) Router() http.Handler {
 
 func (s *Server) registerProtectedRoutes(r chi.Router) {
 	r.Post("/session/rotate-token", s.sessionRotateToken)
+
+	if s.publicRules != nil {
+		r.Get("/public-site", s.getPublicSite)
+		r.Put("/public-site", s.putPublicSite)
+	}
 
 	r.Get("/vault", s.vaultInfo)
 	r.Get("/vault/settings", s.vaultSettings)
@@ -422,6 +434,7 @@ func (s *Server) capabilities(w http.ResponseWriter, _ *http.Request) {
 		// Absent from every server before 2.20.2, which is exactly what makes
 		// it usable as a signal.
 		"reportsMissingAsNotFound": true,
+		"supportsPublicSite":       cfg.PublicSite,
 	})
 }
 
