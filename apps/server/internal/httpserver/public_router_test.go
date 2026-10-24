@@ -493,3 +493,90 @@ func TestPublicNonGetMethods(t *testing.T) {
 		t.Fatalf("POST should not read notes: %d %s", resp.StatusCode, body)
 	}
 }
+
+func TestPublicAssetNonMediaIsSandboxedDownload(t *testing.T) {
+	files := map[string]string{
+		"Blog/a.md":             "![[img.png]]\n\n[page](/attachments/page.html)\n\n[js](/attachments/evil.js)\n\n![[draw.excalidraw]]\n",
+		"attachments/img.png":   string(pngBytes),
+		"attachments/page.html": "<script src=\"/_zn/api/asset?note=Blog/a.md&href=/attachments/evil.js\"></script>",
+		"attachments/evil.js":   "fetch('/admin/api/vault')",
+		"Blog/draw.excalidraw":  `{"type":"excalidraw"}`,
+	}
+	f := newPublicFixture(t, files, map[string]publicsite.Mark{"Blog": publicsite.MarkPublic}, "")
+	asset := func(href string) capturedResponse {
+		return fetchRaw(t, f.srv, apiPath("asset", map[string]string{"note": "Blog/a.md", "href": href}))
+	}
+	for href, name := range map[string]string{
+		"/attachments/page.html": "page.html",
+		"/attachments/evil.js":   "evil.js",
+		"draw.excalidraw":        "draw.excalidraw",
+	} {
+		got := asset(href)
+		if got.Status != 200 {
+			t.Fatalf("%s: status %d", href, got.Status)
+		}
+		if ct := got.Header.Get("Content-Type"); ct != "application/octet-stream" {
+			t.Errorf("%s: Content-Type %q, want application/octet-stream", href, ct)
+		}
+		if cd := got.Header.Get("Content-Disposition"); cd != `attachment; filename=`+name && cd != `attachment; filename="`+name+`"` {
+			t.Errorf("%s: Content-Disposition %q", href, cd)
+		}
+		if csp := got.Header.Get("Content-Security-Policy"); csp != "sandbox" {
+			t.Errorf("%s: CSP %q, want sandbox", href, csp)
+		}
+		if got.Header.Get("X-Content-Type-Options") != "nosniff" {
+			t.Errorf("%s: missing nosniff", href)
+		}
+	}
+	img := asset("img.png")
+	if img.Status != 200 || img.Header.Get("Content-Type") != "image/png" || img.Header.Get("Content-Disposition") != "" ||
+		img.Header.Get("Content-Security-Policy") != "sandbox" {
+		t.Fatalf("png: %d ct=%q cd=%q csp=%q", img.Status, img.Header.Get("Content-Type"),
+			img.Header.Get("Content-Disposition"), img.Header.Get("Content-Security-Policy"))
+	}
+}
+
+// A vault switch mid-request must not pair vault A's policy with vault B's
+// content: every read goes through the vault captured in the index.
+func TestPublicIndexReadsCapturedVault(t *testing.T) {
+	t.Setenv("ZENNOTES_CONFIG_PATH", filepath.Join(t.TempDir(), "server.json"))
+	f := newPublicFixture(t, map[string]string{
+		"Blog/a.md":           "VAULT-A body ![[img.png]]",
+		"attachments/img.png": "VAULT-A-IMG",
+	}, map[string]publicsite.Mark{"Blog": publicsite.MarkPublic}, "")
+	idx := f.s.loadPublicIndex()
+	meta, ok := idx.page("Blog/a.md")
+	if !ok {
+		t.Fatal("Blog/a.md should be public in vault A")
+	}
+
+	rootB := t.TempDir()
+	for rel, body := range map[string]string{
+		"Blog/a.md":           "VAULT-B-PRIVATE body ![[img.png]]",
+		"attachments/img.png": "VAULT-B-IMG",
+	} {
+		abs := filepath.Join(rootB, filepath.FromSlash(rel))
+		_ = os.MkdirAll(filepath.Dir(abs), 0o755)
+		if err := os.WriteFile(abs, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := f.s.switchVaultRoot(rootB); err != nil {
+		t.Fatal(err)
+	}
+
+	body, ok := idx.readBody(meta)
+	if ok && strings.Contains(body, "VAULT-B") {
+		t.Fatalf("index from vault A read vault B's private body: %q", body)
+	}
+	if !ok || !strings.Contains(body, "VAULT-A") {
+		t.Fatalf("expected vault A body, got ok=%v %q", ok, body)
+	}
+	if idx.v == f.s.currentVault() {
+		t.Fatal("index should keep the vault it was built from")
+	}
+	// After the switch, vault B has no rules: everything is private.
+	if got := fetchRaw(t, f.srv, apiPath("note", map[string]string{"path": "Blog/a.md"})); got.Status != 404 {
+		t.Fatalf("vault B note should 404, got %d %q", got.Status, got.Body)
+	}
+}

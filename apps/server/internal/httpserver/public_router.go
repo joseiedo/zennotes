@@ -108,6 +108,10 @@ func (s *Server) publicNotFoundAPI(w http.ResponseWriter) {
 
 // publicIndex is one request's view of what is public.
 type publicIndex struct {
+	// v is the vault captured once for the whole request. Every read in the
+	// request goes through it, so a concurrent vault switch can never pair
+	// one vault's policy with another vault's content.
+	v      *vault.Vault
 	policy publicsite.Policy
 	// pages are the public notes in ListNotes order, by canonical path.
 	pages []vault.NoteMeta
@@ -129,11 +133,15 @@ func (s *Server) loadPublicIndex() publicIndex {
 		return idx
 	}
 	v := s.currentVault()
+	if v == nil {
+		return idx
+	}
 	rules := s.publicRules.Get(v.Root())
 	notes, err := v.ListNotes()
 	if err != nil {
 		return idx
 	}
+	idx.v = v
 	idx.policy = publicsite.NewPolicy(rules)
 	idx.notes = notes
 	for _, n := range notes {
@@ -160,9 +168,13 @@ func (idx publicIndex) page(rel string) (vault.NoteMeta, bool) {
 	return vault.NoteMeta{}, false
 }
 
-// readPublicBody reads a page's raw body; meta must come from idx.pages.
-func (s *Server) readPublicBody(meta vault.NoteMeta) (string, bool) {
-	content, err := s.currentVault().ReadNote(meta.Path)
+// readBody reads a page's raw body from the index's own vault; meta must come
+// from idx.pages.
+func (idx publicIndex) readBody(meta vault.NoteMeta) (string, bool) {
+	if idx.v == nil {
+		return "", false
+	}
+	content, err := idx.v.ReadNote(meta.Path)
 	if err != nil || content.Path != meta.Path {
 		return "", false
 	}
@@ -201,7 +213,7 @@ func (s *Server) publicSiteAPI(w http.ResponseWriter, _ *http.Request) {
 		out.HomeNote = &home
 	}
 	for _, n := range idx.pages {
-		body, ok := s.readPublicBody(n)
+		body, ok := idx.readBody(n)
 		if !ok {
 			continue
 		}
@@ -235,7 +247,7 @@ func (s *Server) publicNoteAPI(w http.ResponseWriter, r *http.Request) {
 		s.publicNotFoundAPI(w)
 		return
 	}
-	body, ok := s.readPublicBody(meta)
+	body, ok := idx.readBody(meta)
 	if !ok {
 		s.publicNotFoundAPI(w)
 		return
@@ -267,7 +279,7 @@ func (s *Server) publicAssetAPI(w http.ResponseWriter, r *http.Request) {
 		s.publicNotFoundAPI(w)
 		return
 	}
-	body, ok := s.readPublicBody(meta)
+	body, ok := idx.readBody(meta)
 	if !ok {
 		s.publicNotFoundAPI(w)
 		return
@@ -284,7 +296,11 @@ func (s *Server) publicAssetAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	v := s.currentVault()
+	v := idx.v
+	if v == nil {
+		s.publicNotFoundAPI(w)
+		return
+	}
 	settings, err := v.GetSettings()
 	if err != nil {
 		s.publicNotFoundAPI(w)
@@ -331,15 +347,28 @@ func (s *Server) publicAssetAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ext := strings.ToLower(path.Ext(resolved))
-	ctype := mime.TypeByExtension(ext)
+	h := w.Header()
+	// Assets share the origin with /admin: never let one run as a document.
+	h.Set("Content-Security-Policy", "sandbox")
+	ctype := ""
+	if publicInlineAssetExts[ext] {
+		ctype = mime.TypeByExtension(ext)
+	}
 	if ctype == "" {
 		ctype = "application/octet-stream"
+		h.Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": path.Base(resolved)}))
 	}
-	w.Header().Set("Content-Type", ctype)
-	if ext == ".svg" {
-		w.Header().Set("Content-Security-Policy", "sandbox")
-	}
+	h.Set("Content-Type", ctype)
 	http.ServeContent(w, r, "", info.ModTime(), f)
+}
+
+// publicInlineAssetExts are the asset types served inline (media and PDF).
+// Everything else is a sandboxed octet-stream download.
+var publicInlineAssetExts = map[string]bool{
+	".apng": true, ".avif": true, ".gif": true, ".jpeg": true, ".jpg": true, ".png": true, ".svg": true, ".webp": true,
+	".pdf": true,
+	".aac": true, ".flac": true, ".m4a": true, ".mp3": true, ".ogg": true, ".wav": true,
+	".m4v": true, ".mov": true, ".mp4": true, ".ogv": true, ".webm": true,
 }
 
 func (s *Server) publicStaticFile(w http.ResponseWriter, rel string) {
@@ -370,7 +399,7 @@ func (s *Server) publicPage(w http.ResponseWriter, urlPath string) {
 	if urlPath == "/" {
 		var page *PublicPage
 		if meta, ok := idx.page(idx.home); ok {
-			page = s.publicPageFor(meta, "/")
+			page = s.publicPageFor(idx, meta, "/")
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = w.Write(s.renderShell(page))
@@ -382,7 +411,7 @@ func (s *Server) publicPage(w http.ResponseWriter, urlPath string) {
 		s.publicNotFoundPage(w)
 		return
 	}
-	page := s.publicPageFor(meta, publicPageURL(meta.Path))
+	page := s.publicPageFor(idx, meta, publicPageURL(meta.Path))
 	if page == nil {
 		s.publicNotFoundPage(w)
 		return
@@ -391,8 +420,8 @@ func (s *Server) publicPage(w http.ResponseWriter, urlPath string) {
 	_, _ = w.Write(s.renderShell(page))
 }
 
-func (s *Server) publicPageFor(meta vault.NoteMeta, urlPath string) *PublicPage {
-	raw, ok := s.readPublicBody(meta)
+func (s *Server) publicPageFor(idx publicIndex, meta vault.NoteMeta, urlPath string) *PublicPage {
+	raw, ok := idx.readBody(meta)
 	if !ok {
 		return nil
 	}
