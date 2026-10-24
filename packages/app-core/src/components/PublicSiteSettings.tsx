@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { NoteMeta } from "@shared/ipc";
 import {
   effectiveVisibility,
   type PublicMark,
   type PublicSiteConfig,
 } from "@shared/public-site-rules";
+import { createSaveQueue } from "../lib/save-queue";
 import { useStore } from "../store";
 
 type Rules = Record<string, PublicMark>;
@@ -181,7 +182,6 @@ export function PublicSiteSettings(): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [open, setOpen] = useState<Set<string>>(new Set());
-  const seq = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -194,28 +194,28 @@ export function PublicSiteSettings(): JSX.Element {
     };
   }, []);
 
-  const save = useCallback(
-    async (next: { homeNote: string; rules: Rules }): Promise<void> => {
-      const mine = ++seq.current;
-      setConfig((c) => (c ? { ...c, ...next } : c));
-      setSaving(true);
-      setError(null);
-      try {
-        const saved = await window.zen.setPublicSiteConfig!(next);
-        if (mine === seq.current) setConfig(saved);
-      } catch (e) {
-        if (mine !== seq.current) return;
-        setError(e instanceof Error ? e.message : String(e));
-        try {
+  const save = useMemo(
+    () =>
+      createSaveQueue<{ homeNote: string; rules: Rules }, PublicSiteConfig>({
+        send: (next) => window.zen.setPublicSiteConfig!(next),
+        onSaved: (saved) => {
+          setError(null);
+          setConfig(saved);
+        },
+        onError: (e) => setError(e instanceof Error ? e.message : String(e)),
+        resync: async () => {
           setConfig(await window.zen.getPublicSiteConfig!());
-        } catch {
-          /* keep optimistic state; error is shown */
-        }
-      } finally {
-        if (mine === seq.current) setSaving(false);
-      }
-    },
+        },
+        onBusyChange: setSaving,
+      }),
     [],
+  );
+  const saveNext = useCallback(
+    (next: { homeNote: string; rules: Rules }): void => {
+      setConfig((c) => (c ? { ...c, ...next } : c));
+      void save(next);
+    },
+    [save],
   );
 
   const tree = useMemo(() => buildPublicTree(notes), [notes]);
@@ -240,7 +240,7 @@ export function PublicSiteSettings(): JSX.Element {
   }
 
   const choose = (path: string, choice: Choice): void =>
-    void save({
+    saveNext({
       homeNote: config.homeNote,
       rules: withMark(config.rules, path, choice === "inherit" ? null : choice),
     });
@@ -289,7 +289,7 @@ export function PublicSiteSettings(): JSX.Element {
           <button
             type="button"
             onClick={() =>
-              void save({ homeNote: config.homeNote, rules: withMark(config.rules, p, null) })
+              saveNext({ homeNote: config.homeNote, rules: withMark(config.rules, p, null) })
             }
             className="shrink-0 rounded-md px-2 py-1 text-ink-500 hover:bg-rose-500/15 hover:text-rose-400"
           >
@@ -305,7 +305,7 @@ export function PublicSiteSettings(): JSX.Element {
         <select
           id="public-home-note"
           value={config.homeNote}
-          onChange={(e) => void save({ homeNote: e.target.value, rules: config.rules })}
+          onChange={(e) => saveNext({ homeNote: e.target.value, rules: config.rules })}
           className="min-w-0 max-w-xs rounded-md border border-paper-300 bg-paper-100 px-2.5 py-1.5 text-xs text-ink-900"
         >
           <option value="">None</option>
