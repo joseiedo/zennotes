@@ -206,10 +206,7 @@ func (s *Server) Router() http.Handler {
 // the public site at "/". The admin side keeps its security headers and CORS;
 // the public side gets neither CORS nor auth.
 func (s *Server) publicSiteRouter(inner http.Handler) http.Handler {
-	basePath := s.currentConfig().BasePath
-	if basePath == "" || basePath == "/" {
-		basePath = "/admin"
-	}
+	basePath := s.adminBasePath()
 	outer := chi.NewRouter()
 	outer.Use(middleware.RequestID)
 	outer.Use(middleware.Recoverer)

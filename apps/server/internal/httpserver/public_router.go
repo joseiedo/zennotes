@@ -31,8 +31,9 @@ const (
 )
 
 // publicKillSwitchSW replaces any service worker an earlier root-mounted admin
-// app registered at "/": it unregisters itself and reloads its clients.
-const publicKillSwitchSW = `self.addEventListener('install',()=>self.skipWaiting()); self.addEventListener('activate',e=>e.waitUntil(self.registration.unregister().then(()=>self.clients.matchAll()).then(cs=>cs.forEach(c=>c.navigate(c.url)))))`
+// app registered at "/": it deletes every Cache Storage cache (the old app's
+// precache), unregisters itself and reloads its clients.
+const publicKillSwitchSW = `self.addEventListener('install',()=>self.skipWaiting()); self.addEventListener('activate',e=>e.waitUntil(caches.keys().then(ks=>Promise.all(ks.map(k=>caches.delete(k)))).catch(()=>{}).then(()=>self.registration.unregister()).then(()=>self.clients.matchAll()).then(cs=>cs.forEach(c=>c.navigate(c.url)))))`
 
 var publicNotFoundJSON = []byte(`{"error":"not found"}` + "\n")
 
@@ -181,6 +182,34 @@ func isPublicPage(p publicsite.Policy, m vault.NoteMeta) bool {
 	return p.IsPublicNote(m) && !strings.HasSuffix(strings.ToLower(m.Path), ".excalidraw.md")
 }
 
+// reservedPublicURL reports whether a note's public URL would be shadowed by
+// a fixed route (the admin base path, sitemap/robots/sw.js, /_zn/...). Such
+// notes are left out of every public listing so they are consistently
+// unreachable rather than listed but broken.
+func reservedPublicURL(notePath, basePath string) bool {
+	p := "/" + strings.TrimSuffix(notePath, ".md")
+	switch p {
+	case "/sitemap.xml", "/robots.txt", "/sw.js":
+		return true
+	}
+	return p == basePath || strings.HasPrefix(p, basePath+"/") || strings.HasPrefix(p, publicReserved)
+}
+
+// adminBasePath is where the admin app is mounted when the public site is on.
+func (s *Server) adminBasePath() string {
+	basePath := s.currentConfig().BasePath
+	if basePath == "" || basePath == "/" {
+		return "/admin"
+	}
+	return basePath
+}
+
+// isServedPublicPage is the single predicate for "this note is a page of the
+// public site": public, markdown, not a drawing, URL not shadowed by a route.
+func (s *Server) isServedPublicPage(p publicsite.Policy, m vault.NoteMeta) bool {
+	return isPublicPage(p, m) && !reservedPublicURL(m.Path, s.adminBasePath())
+}
+
 // loadPublicIndex fails closed: any error yields an empty index.
 func (s *Server) loadPublicIndex() publicIndex {
 	idx := publicIndex{policy: publicsite.NewPolicy(publicsite.SiteRules{})}
@@ -200,7 +229,7 @@ func (s *Server) loadPublicIndex() publicIndex {
 	idx.policy = publicsite.NewPolicy(rules)
 	idx.notes = notes
 	for _, n := range notes {
-		if isPublicPage(idx.policy, n) {
+		if s.isServedPublicPage(idx.policy, n) {
 			idx.pages = append(idx.pages, n)
 			if rules.HomeNote != "" && n.Path == rules.HomeNote {
 				idx.home = n.Path
@@ -615,7 +644,7 @@ func (s *Server) publicRobots(w http.ResponseWriter) {
 	cfg := s.currentConfig()
 	var b strings.Builder
 	b.WriteString("User-agent: *\n")
-	b.WriteString("Disallow: " + strings.TrimRight(cfg.BasePath, "/") + "/\n")
+	b.WriteString("Disallow: " + s.adminBasePath() + "/\n")
 	b.WriteString("Disallow: /_zn/api/\n")
 	if base := strings.TrimRight(cfg.PublicURL, "/"); base != "" {
 		b.WriteString("Sitemap: " + base + "/sitemap.xml\n")

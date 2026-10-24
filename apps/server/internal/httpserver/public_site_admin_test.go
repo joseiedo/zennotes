@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -178,7 +179,7 @@ func TestPublicSiteRulesFollowVaultSwitch(t *testing.T) {
 	if code, out := psDo(t, srv, jar, "PUT", map[string]any{"rules": map[string]string{"a": "public"}}); code != 200 {
 		t.Fatalf("PUT: %d %v", code, out)
 	}
-	if !s.currentPolicy().IsPublic("a/x.md") {
+	if !s.loadPublicIndex().policy.IsPublic("a/x.md") {
 		t.Fatal("policy should see rule in vault A")
 	}
 	if _, err := s.switchVaultRoot(t.TempDir()); err != nil {
@@ -188,7 +189,30 @@ func TestPublicSiteRulesFollowVaultSwitch(t *testing.T) {
 	if r, _ := got["rules"].(map[string]any); len(r) != 0 {
 		t.Fatalf("rules after switch: %v", got["rules"])
 	}
-	if s.currentPolicy().IsPublic("a/x.md") {
+	if s.loadPublicIndex().policy.IsPublic("a/x.md") {
 		t.Fatal("policy must be empty for vault B")
+	}
+}
+
+// M4: homeNotePublic uses the same predicate as the public "/": a drawing (or
+// a note whose URL is shadowed by a route) is never a served home page.
+func TestPublicSiteAdminHomeNotePublicMatchesPublicRoot(t *testing.T) {
+	s, srv, jar := newPublicSiteAdmin(t, true)
+	root := s.currentVault().Root()
+	for rel, body := range map[string]string{"Blog/d.excalidraw.md": "drawing", "admin/x.md": "x", "Blog/ok.md": "ok"} {
+		abs := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(abs), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(abs, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rules := map[string]string{"Blog": "public", "admin": "public"}
+	for home, want := range map[string]bool{"Blog/d.excalidraw.md": false, "admin/x.md": false, "Blog/ok.md": true} {
+		_, got := psDo(t, srv, jar, "PUT", map[string]any{"homeNote": home, "rules": rules})
+		if got["homeNotePublic"] != want {
+			t.Errorf("%s: homeNotePublic = %v, want %v", home, got["homeNotePublic"], want)
+		}
 	}
 }

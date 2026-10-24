@@ -162,7 +162,7 @@ func TestPublicLeakMatrix(t *testing.T) {
 			foundTrash = true
 		}
 	}
-	if !foundTrash || !f.s.currentPolicy().IsPublic("trash/Blog/t.md") {
+	if !foundTrash || !f.policy().IsPublic("trash/Blog/t.md") {
 		t.Fatalf("fixture: trashed note not set up as intended (found=%v)", foundTrash)
 	}
 
@@ -387,6 +387,11 @@ func TestPublicServiceWorkerKillSwitch(t *testing.T) {
 	}
 	if ct := got.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/javascript") {
 		t.Fatalf("/sw.js content-type %q", ct)
+	}
+	// M5: the old admin PWA's Cache Storage is wiped before unregistering.
+	keys, del, unreg := strings.Index(got.Body, "caches.keys()"), strings.Index(got.Body, "caches.delete("), strings.Index(got.Body, "unregister")
+	if keys < 0 || del < 0 || keys > unreg || del > unreg {
+		t.Fatalf("/sw.js must delete all caches before unregistering: %q", got.Body)
 	}
 }
 
@@ -718,5 +723,60 @@ func TestPublicSiteBareBasePathRedirects(t *testing.T) {
 	}
 	if r := fetchRaw(t, f.srv, "/admin/"); r.Status != http.StatusOK {
 		t.Fatalf("/admin/: %d", r.Status)
+	}
+}
+
+// M3: public notes whose URL would collide with a fixed route are left out of
+// every public listing, so they are consistently unreachable.
+func TestPublicPagesExcludeReservedURLs(t *testing.T) {
+	files := map[string]string{
+		"admin.md":         "zzword\n",
+		"admin/x.md":       "zzword\n",
+		"sitemap.xml.md":   "zzword\n",
+		"robots.txt.md":    "zzword\n",
+		"sw.js.md":         "zzword\n",
+		"_zn/api/site.md":  "zzword\n",
+		"Blog/ok.md":       "zzword\n",
+		"administrator.md": "zzword\n",
+	}
+	rules := map[string]publicsite.Mark{}
+	for _, k := range []string{"admin.md", "admin", "sitemap.xml.md", "robots.txt.md", "sw.js.md", "_zn", "Blog", "administrator.md"} {
+		rules[k] = publicsite.MarkPublic
+	}
+	f := newPublicFixture(t, files, rules, "admin/x.md")
+	site := fetchRaw(t, f.srv, apiPath("site", nil))
+	var out struct {
+		HomeNote *string `json:"homeNote"`
+		Notes    []struct {
+			Path string `json:"path"`
+		} `json:"notes"`
+	}
+	if err := json.Unmarshal([]byte(site.Body), &out); err != nil {
+		t.Fatal(err)
+	}
+	var paths []string
+	for _, n := range out.Notes {
+		paths = append(paths, n.Path)
+	}
+	if strings.Join(paths, ",") != "Blog/ok.md,administrator.md" && strings.Join(paths, ",") != "administrator.md,Blog/ok.md" {
+		t.Errorf("site notes = %v", paths)
+	}
+	if out.HomeNote != nil {
+		t.Errorf("reserved home note listed: %q", *out.HomeNote)
+	}
+	sm := fetchRaw(t, f.srv, "/sitemap.xml")
+	for _, bad := range []string{"/admin/x", "/admin<", "/sitemap.xml<", "/robots.txt<", "/sw.js<", "/_zn/"} {
+		if strings.Contains(sm.Body, testPublicURL+bad) {
+			t.Errorf("sitemap lists %s: %s", bad, sm.Body)
+		}
+	}
+	search := fetchRaw(t, f.srv, apiPath("search", map[string]string{"q": "zzword"}))
+	for _, bad := range []string{`"admin.md"`, `"admin/x.md"`, `"sitemap.xml.md"`, `"robots.txt.md"`, `"sw.js.md"`, `"_zn/api/site.md"`} {
+		if strings.Contains(search.Body, bad) {
+			t.Errorf("search lists %s: %s", bad, search.Body)
+		}
+	}
+	if n := fetchRaw(t, f.srv, apiPath("note", map[string]string{"path": "admin/x.md"})); n.Status != http.StatusNotFound {
+		t.Errorf("note API serves reserved note: %d", n.Status)
 	}
 }

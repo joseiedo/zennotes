@@ -8,15 +8,6 @@ import (
 	"github.com/ZenNotes/zennotes/apps/server/internal/publicsite"
 )
 
-// currentPolicy returns the visibility policy for the active vault. With the
-// public site off (or no rules store) it is empty: nothing is public.
-func (s *Server) currentPolicy() publicsite.Policy {
-	if s.publicRules == nil {
-		return publicsite.NewPolicy(publicsite.SiteRules{})
-	}
-	return publicsite.NewPolicy(s.publicRules.Get(s.currentVault().Root()))
-}
-
 type publicSiteResponse struct {
 	HomeNote       string                     `json:"homeNote"`
 	Rules          map[string]publicsite.Mark `json:"rules"`
@@ -43,7 +34,7 @@ func (s *Server) publicSiteState(rules publicsite.SiteRules) (publicSiteResponse
 	homePublic := false
 	for _, n := range notes {
 		paths = append(paths, n.Path)
-		if rules.HomeNote != "" && n.Path == rules.HomeNote && policy.IsPublicNote(n) {
+		if rules.HomeNote != "" && n.Path == rules.HomeNote && s.isServedPublicPage(policy, n) {
 			homePublic = true
 		}
 	}
