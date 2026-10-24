@@ -36,17 +36,18 @@ const (
 )
 
 type Server struct {
-	mu              sync.RWMutex
-	Config          config.Config
-	Vault           *vault.Vault
-	Watcher         *watcher.Watcher
-	Static          fs.FS // embedded web bundle, may be nil in dev
-	sessions        *sessionStore
-	loginLimiter    *attemptLimiter
-	wsRejectLimiter *attemptLimiter
-	loggedOrigins   sync.Map          // origin -> struct{}; dedupes CORS-rejection logs
-	publicRules     *publicsite.Store // nil unless cfg.PublicSite
-	publicStatic    fs.FS             // public site bundle (public.html + assets); nil → built-in shell
+	mu                  sync.RWMutex
+	Config              config.Config
+	Vault               *vault.Vault
+	Watcher             *watcher.Watcher
+	Static              fs.FS // embedded web bundle, may be nil in dev
+	sessions            *sessionStore
+	loginLimiter        *attemptLimiter
+	wsRejectLimiter     *attemptLimiter
+	publicSearchLimiter *attemptLimiter
+	loggedOrigins       sync.Map          // origin -> struct{}; dedupes CORS-rejection logs
+	publicRules         *publicsite.Store // nil unless cfg.PublicSite
+	publicStatic        fs.FS             // public site bundle (public.html + assets); nil → built-in shell
 }
 
 // SetPublicStatic sets the public site bundle served at /_zn/static/ and used
@@ -79,14 +80,15 @@ func New(v *vault.Vault, w *watcher.Watcher, static fs.FS, cfg config.Config) *S
 		rules = publicsite.NewStore(config.PublicSitePath())
 	}
 	return &Server{
-		publicRules:     rules,
-		Vault:           v,
-		Watcher:         w,
-		Static:          static,
-		Config:          cfg,
-		sessions:        newSessionStore(sessionsPath),
-		loginLimiter:    newAttemptLimiter(10*time.Minute, 10),
-		wsRejectLimiter: newAttemptLimiter(1*time.Minute, 20),
+		publicRules:         rules,
+		Vault:               v,
+		Watcher:             w,
+		Static:              static,
+		Config:              cfg,
+		sessions:            newSessionStore(sessionsPath),
+		loginLimiter:        newAttemptLimiter(10*time.Minute, 10),
+		wsRejectLimiter:     newAttemptLimiter(1*time.Minute, 20),
+		publicSearchLimiter: newRequestLimiter(time.Minute, 60),
 	}
 }
 

@@ -3,6 +3,7 @@ package httpserver
 import (
 	"bytes"
 	"encoding/json"
+	"encoding/xml"
 	"io"
 	"io/fs"
 	"net/http"
@@ -216,7 +217,7 @@ func TestPublicLeakMatrix(t *testing.T) {
 		"/Blog/Drafts/d", "/Private%20note", "/Blog/.hidden/h", "/Blog/%2e%2e/Private%20note",
 		"/Blog/../Private%20note", "/blog/a", "/BLOG/A", "/Blog/a.md", "/Blog/a/", "/Blog%5Ca",
 		"//Blog/a", "/trash/Blog/t", "/Blog/draw.excalidraw", "/Blog/draw", "/_zn/missing", "/_zn/",
-		"/_zn/static/nope.js", "/_zn/static/../public.html", "/sitemap.xml", "/%2e%2e/etc/passwd",
+		"/_zn/static/nope.js", "/_zn/static/../public.html", "/%2e%2e/etc/passwd",
 	} {
 		got := fetchRaw(t, f.srv, p)
 		if !reflect.DeepEqual(got, pageRef) {
@@ -578,5 +579,101 @@ func TestPublicIndexReadsCapturedVault(t *testing.T) {
 	// After the switch, vault B has no rules: everything is private.
 	if got := fetchRaw(t, f.srv, apiPath("note", map[string]string{"path": "Blog/a.md"})); got.Status != 404 {
 		t.Fatalf("vault B note should 404, got %d %q", got.Status, got.Body)
+	}
+}
+
+func searchHits(t *testing.T, f *publicFixture, q string) []map[string]string {
+	t.Helper()
+	resp := fetchRaw(t, f.srv, apiPath("search", map[string]string{"q": q}))
+	if resp.Status != http.StatusOK {
+		t.Fatalf("search %q: status %d", q, resp.Status)
+	}
+	var hits []map[string]string
+	if err := json.Unmarshal([]byte(resp.Body), &hits); err != nil {
+		t.Fatalf("search %q: %v (%s)", q, err, resp.Body)
+	}
+	return hits
+}
+
+func TestPublicSearchOnlyPublic(t *testing.T) {
+	f := newPublicFixture(t, leakFixtureFiles(), leakFixtureRules(), "Blog/a.md")
+	for _, q := range []string{"S", "LEAK", "private", "draft", "hidden", "trashed"} {
+		for _, h := range searchHits(t, f, q) {
+			if h["path"] != "Blog/a.md" {
+				t.Fatalf("q=%q leaked %v", q, h)
+			}
+			if strings.Contains(h["lineText"], "LEAK") {
+				t.Fatalf("q=%q leaked line %v", q, h)
+			}
+		}
+	}
+	hits := searchHits(t, f, "Hello")
+	if len(hits) != 1 || hits[0]["path"] != "Blog/a.md" || !strings.Contains(hits[0]["lineText"], "Hello") {
+		t.Fatalf("Hello hits = %v", hits)
+	}
+	if got := searchHits(t, f, ""); len(got) != 0 {
+		t.Fatalf("empty q = %v", got)
+	}
+}
+
+func TestPublicSearchDropsSanitizedLines(t *testing.T) {
+	f := newPublicFixture(t, leakFixtureFiles(), leakFixtureRules(), "Blog/a.md")
+	// S2 only occurs inside a %% comment, S1 only inside frontmatter.
+	for _, q := range []string{"S2", "S1", "Comment only"} {
+		if got := searchHits(t, f, q); len(got) != 0 {
+			t.Fatalf("q=%q = %v", q, got)
+		}
+	}
+}
+
+func TestPublicSearchRateLimited(t *testing.T) {
+	f := newPublicFixture(t, leakFixtureFiles(), leakFixtureRules(), "Blog/a.md")
+	for i := 0; i < 60; i++ {
+		if resp := fetchRaw(t, f.srv, apiPath("search", map[string]string{"q": "Hello"})); resp.Status != http.StatusOK {
+			t.Fatalf("call %d: %d", i+1, resp.Status)
+		}
+	}
+	if resp := fetchRaw(t, f.srv, apiPath("search", map[string]string{"q": "Hello"})); resp.Status != http.StatusTooManyRequests {
+		t.Fatalf("61st call: %d", resp.Status)
+	}
+}
+
+func TestSitemapOnlyPublic(t *testing.T) {
+	f := newPublicFixture(t, leakFixtureFiles(), leakFixtureRules(), "Blog/a.md")
+	resp := fetchRaw(t, f.srv, "/sitemap.xml")
+	if resp.Status != http.StatusOK || !strings.Contains(resp.Header.Get("Content-Type"), "xml") {
+		t.Fatalf("status %d %v", resp.Status, resp.Header)
+	}
+	if err := xml.Unmarshal([]byte(resp.Body), new(struct{})); err != nil {
+		t.Fatalf("invalid xml: %v", err)
+	}
+	for _, want := range []string{"<loc>" + testPublicURL + "/</loc>", "<loc>" + testPublicURL + "/Blog/a</loc>", "<lastmod>"} {
+		if !strings.Contains(resp.Body, want) {
+			t.Fatalf("missing %s in %s", want, resp.Body)
+		}
+	}
+	for _, bad := range []string{"LEAK", "Drafts", "Private", "trash", "hidden", "excalidraw", ".md"} {
+		if strings.Contains(resp.Body, bad) {
+			t.Fatalf("sitemap leaks %q: %s", bad, resp.Body)
+		}
+	}
+
+	// Without PublicURL: byte-identical page 404.
+	f.s.mu.Lock()
+	f.s.Config.PublicURL = ""
+	f.s.mu.Unlock()
+	got := fetchRaw(t, f.srv, "/sitemap.xml")
+	want := fetchRaw(t, f.srv, "/no/such/page")
+	if got.Status != http.StatusNotFound || got.Body != want.Body || !reflect.DeepEqual(got.Header, want.Header) {
+		t.Fatalf("no-PublicURL sitemap is not the page 404: %d", got.Status)
+	}
+}
+
+func TestRobotsDisallowsAdmin(t *testing.T) {
+	f := newPublicFixture(t, leakFixtureFiles(), leakFixtureRules(), "Blog/a.md")
+	resp := fetchRaw(t, f.srv, "/robots.txt")
+	want := "User-agent: *\nDisallow: /admin/\nDisallow: /_zn/api/\nSitemap: " + testPublicURL + "/sitemap.xml\n"
+	if resp.Status != http.StatusOK || resp.Body != want {
+		t.Fatalf("robots = %d %q", resp.Status, resp.Body)
 	}
 }

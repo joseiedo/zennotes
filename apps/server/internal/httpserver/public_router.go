@@ -2,12 +2,15 @@ package httpserver
 
 import (
 	"encoding/json"
+	"encoding/xml"
 	"io/fs"
 	"mime"
 	"net/http"
 	"os"
 	"path"
+	"regexp"
 	"strings"
+	"time"
 
 	"github.com/ZenNotes/zennotes/apps/server/internal/publicsite"
 	"github.com/ZenNotes/zennotes/apps/server/internal/vault"
@@ -69,6 +72,10 @@ func (s *Server) publicDispatch(w http.ResponseWriter, r *http.Request) {
 	}
 	p := r.URL.Path
 	switch {
+	case p == "/sitemap.xml":
+		s.publicSitemap(w)
+	case p == "/robots.txt":
+		s.publicRobots(w)
 	case p == "/sw.js":
 		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
 		_, _ = w.Write([]byte(publicKillSwitchSW))
@@ -80,6 +87,8 @@ func (s *Server) publicDispatch(w http.ResponseWriter, r *http.Request) {
 			s.publicNoteAPI(w, r)
 		case "asset":
 			s.publicAssetAPI(w, r)
+		case "search":
+			s.publicSearchAPI(w, r)
 		default:
 			s.publicNotFoundAPI(w)
 		}
@@ -432,4 +441,131 @@ func (s *Server) publicPageFor(idx publicIndex, meta vault.NoteMeta, urlPath str
 		Body:        sanitized,
 		URLPath:     urlPath,
 	}
+}
+
+const publicSearchMax = 50
+
+var publicWSRe = regexp.MustCompile(`\s+`)
+
+// publicLineKey mirrors the vault's search-line normalisation (collapse
+// whitespace, trim, cap at 220 bytes) so a raw match can be compared with a
+// line of the sanitized body.
+func publicLineKey(line string) string {
+	c := strings.TrimSpace(publicWSRe.ReplaceAllString(line, " "))
+	if len(c) > 220 {
+		c = c[:220]
+	}
+	return c
+}
+
+type publicSearchHit struct {
+	Path     string `json:"path"`
+	Title    string `json:"title"`
+	LineText string `json:"lineText"`
+}
+
+// publicSearchAPI searches through the request's own vault, keeps only public
+// pages, and only lines that survive sanitizing (never frontmatter, comments
+// or other stripped text).
+func (s *Server) publicSearchAPI(w http.ResponseWriter, r *http.Request) {
+	if !s.publicSearchLimiter.allow(s.clientAddressKey(r)) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":"too many requests"}` + "\n"))
+		return
+	}
+	out := []publicSearchHit{}
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	if q == "" {
+		writePublicJSON(w, out)
+		return
+	}
+	idx := s.loadPublicIndex()
+	if idx.v == nil {
+		writePublicJSON(w, out)
+		return
+	}
+	matches, err := idx.v.SearchText(q)
+	if err != nil {
+		writePublicJSON(w, out)
+		return
+	}
+	needle := strings.ToLower(q)
+	lines := map[string]map[string]bool{}
+	for _, m := range matches {
+		if len(out) >= publicSearchMax {
+			break
+		}
+		meta, ok := idx.page(m.Path)
+		if !ok {
+			continue
+		}
+		set, seen := lines[meta.Path]
+		if !seen {
+			if body, ok := idx.readBody(meta); ok {
+				set = map[string]bool{}
+				for _, l := range strings.Split(publicsite.SanitizeBody(body), "\n") {
+					set[publicLineKey(l)] = true
+				}
+			}
+			lines[meta.Path] = set
+		}
+		if set == nil || m.LineText == "" || !set[m.LineText] || !strings.Contains(strings.ToLower(m.LineText), needle) {
+			continue
+		}
+		out = append(out, publicSearchHit{Path: meta.Path, Title: meta.Title, LineText: m.LineText})
+	}
+	writePublicJSON(w, out)
+}
+
+type sitemapURL struct {
+	Loc     string `xml:"loc"`
+	LastMod string `xml:"lastmod,omitempty"`
+}
+
+type sitemapSet struct {
+	XMLName xml.Name     `xml:"urlset"`
+	Xmlns   string       `xml:"xmlns,attr"`
+	URLs    []sitemapURL `xml:"url"`
+}
+
+func (s *Server) publicSitemap(w http.ResponseWriter) {
+	base := strings.TrimRight(s.currentConfig().PublicURL, "/")
+	if base == "" {
+		s.publicNotFoundPage(w)
+		return
+	}
+	idx := s.loadPublicIndex()
+	set := sitemapSet{Xmlns: "http://www.sitemaps.org/schemas/sitemap/0.9"}
+	if idx.home != "" {
+		set.URLs = append(set.URLs, sitemapURL{Loc: base + "/"})
+	}
+	for _, n := range idx.pages {
+		u := sitemapURL{Loc: base + publicPageURL(n.Path)}
+		if n.UpdatedAt > 0 {
+			u.LastMod = time.UnixMilli(n.UpdatedAt).UTC().Format("2006-01-02")
+		}
+		set.URLs = append(set.URLs, u)
+	}
+	data, err := xml.Marshal(set)
+	if err != nil {
+		s.publicNotFoundPage(w)
+		return
+	}
+	w.Header().Set("Content-Type", "application/xml; charset=utf-8")
+	_, _ = w.Write([]byte(xml.Header))
+	_, _ = w.Write(data)
+}
+
+func (s *Server) publicRobots(w http.ResponseWriter) {
+	cfg := s.currentConfig()
+	var b strings.Builder
+	b.WriteString("User-agent: *\n")
+	b.WriteString("Disallow: " + strings.TrimRight(cfg.BasePath, "/") + "/\n")
+	b.WriteString("Disallow: /_zn/api/\n")
+	if base := strings.TrimRight(cfg.PublicURL, "/"); base != "" {
+		b.WriteString("Sitemap: " + base + "/sitemap.xml\n")
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	_, _ = w.Write([]byte(b.String()))
 }

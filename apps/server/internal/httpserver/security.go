@@ -36,6 +36,9 @@ type attemptLimiter struct {
 	window  time.Duration
 	maxHits int
 	hits    map[string][]time.Time
+	// noBackoff keeps only the window cap (for ordinary request throttling,
+	// not failure counting).
+	noBackoff bool
 }
 
 type httpStatusError struct {
@@ -147,6 +150,13 @@ func newAttemptLimiter(window time.Duration, maxHits int) *attemptLimiter {
 	}
 }
 
+// newRequestLimiter is a plain sliding-window cap without failure backoff.
+func newRequestLimiter(window time.Duration, maxHits int) *attemptLimiter {
+	l := newAttemptLimiter(window, maxHits)
+	l.noBackoff = true
+	return l
+}
+
 func (l *attemptLimiter) allow(key string) bool {
 	if strings.TrimSpace(key) == "" {
 		key = "unknown"
@@ -167,7 +177,7 @@ func (l *attemptLimiter) allow(key string) bool {
 	// Exponential backoff between consecutive attempts. The window-based
 	// cap below is the absolute ceiling; the per-attempt backoff makes
 	// even the first few failures cost real time.
-	if n := len(history); n > 0 {
+	if n := len(history); n > 0 && !l.noBackoff {
 		if wait := backoffDelay(n); now.Sub(history[n-1]) < wait {
 			l.hits[key] = history
 			return false
