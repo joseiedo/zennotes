@@ -323,11 +323,20 @@ Environment variables:
   which defaults to `/admin` when the public site is on. An explicit non-root
   `ZENNOTES_BASE_PATH` is respected; the admin app is never served at `/`.
 - `ZENNOTES_PUBLIC_URL` — the public origin, e.g. `https://notes.example.com`
-  (no trailing slash). Used for canonical links and social-preview (`og:url`)
-  tags. Without it those tags are omitted.
+  (no trailing slash). Used for canonical links, social-preview (`og:url`)
+  tags and `/sitemap.xml`. Without it those tags are omitted, `/sitemap.xml`
+  returns 404 and `robots.txt` names no sitemap.
 - `ZENNOTES_ADMIN_PROXY_AUTH=1` — declare that your reverse proxy
   authenticates the admin path. Only needed when you run without
   `ZENNOTES_AUTH_TOKEN`.
+- `ZENNOTES_TRUSTED_PROXIES` — set this to your proxy's address (or CIDR)
+  whenever ZenNotes runs behind a reverse proxy. Public search is rate-limited
+  per client; without it every visitor looks like the proxy and shares one
+  limit.
+
+The admin path is used only while the public site is on: the `/admin` default
+is never written to `server.json`, so turning the public site off brings the
+admin app back to `/` (an explicit `ZENNOTES_BASE_PATH` is kept).
 
 **No-auth refusal.** With the public site on, the server refuses to start
 unless the admin app is protected: set `ZENNOTES_AUTH_TOKEN` (or
@@ -340,20 +349,58 @@ folders/notes and an optional home note in the admin app. The rules are stored
 in `public-site.json` next to the host config (`server.json`, i.e. on the
 `/data` volume in Docker), keyed by the vault's absolute path. A missing or
 unreadable rules file means nothing is public. Trashed notes, dot-folders,
-comments and frontmatter are never published; Excalidraw drawings and
-attachments are only served when a public note embeds them. Private, missing
-and malformed URLs all return the same 404.
+inline comments (`%%…%%` and `<!-- … -->` in a note's text) and frontmatter
+are never published, and comment sidecar files (the threads you add in the
+app) are never served at all; Excalidraw drawings and attachments are only
+served when a public note embeds them. Private, missing and malformed URLs all
+return the same 404. A note whose URL would collide with a fixed route (the
+admin path, `/sitemap.xml`, `/robots.txt`, `/sw.js`, `/_zn/…`) is left out of
+the site.
+
+**Renames.** Rules are keyed by path. Renaming, moving or duplicating a note,
+folder or attachment *in ZenNotes* carries its Hidden marks along (a duplicate
+of a hidden item is hidden too), so a hidden draft inside a public folder stays
+hidden under its new name. Public marks are not carried: a renamed public
+folder becomes private until you mark it again. Renames made **outside**
+ZenNotes (Obsidian, a sync tool, the shell) can't be tracked — after them,
+check the public site panel for "matches nothing in the vault" warnings and
+re-mark what moved, especially hidden items inside public folders.
 
 The public site reserves `/_zn/` (`/_zn/api/*` and `/_zn/static/*`) and
 serves a `/sw.js` that unregisters any service worker an earlier root-mounted
 install left behind, so old browser tabs switch to the public site cleanly.
 
+**Proxy-auth mode.** With `ZENNOTES_ADMIN_PROXY_AUTH=1` the proxy is the
+only thing protecting the admin app, so:
+
+- the ZenNotes port must not be reachable except through the proxy — bind it
+  to `127.0.0.1` (`ZENNOTES_BIND=127.0.0.1:7878`) or don't publish it from the
+  container;
+- the proxy must protect both `/admin` and everything under `/admin/` (see the
+  two `location` blocks below);
+- because browsers send proxy credentials automatically, the server refuses
+  (403) state-changing requests and WebSocket upgrades under the admin path
+  that come from another site (a foreign `Origin`, or `Sec-Fetch-Site:
+  cross-site`). A `*` in `ZENNOTES_ALLOWED_ORIGINS` does not lift this; list
+  extra origins explicitly. Token mode is unaffected.
+
 Example Nginx config, protecting the admin path at the proxy (when you rely on
-`ZENNOTES_ADMIN_PROXY_AUTH=1`; with a token you can drop `auth_basic`):
+`ZENNOTES_ADMIN_PROXY_AUTH=1`; with a token you can drop `auth_basic`). Set
+`ZENNOTES_TRUSTED_PROXIES=127.0.0.1` so rate limits see real clients:
 
 ```nginx
 server {
     server_name notes.example.com;
+
+    # The bare admin path (redirects to /admin/) — protect it too.
+    location = /admin {
+        auth_basic           "ZenNotes admin";
+        auth_basic_user_file /etc/nginx/zennotes.htpasswd;
+        proxy_pass         http://127.0.0.1:7878;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+    }
 
     location /admin/ {
         auth_basic           "ZenNotes admin";
