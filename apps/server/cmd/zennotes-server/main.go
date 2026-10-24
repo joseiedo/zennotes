@@ -24,6 +24,9 @@ func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
 	cfg := config.Load()
+	if err := config.ValidatePublicSite(cfg); err != nil {
+		log.Fatal(err)
+	}
 	if strings.TrimSpace(cfg.AuthToken) == "" && !cfg.AllowInsecureNoAuth && !bindIsLoopback(cfg.Bind) {
 		log.Fatal("refusing to start without an auth token on a non-loopback bind; set ZENNOTES_AUTH_TOKEN, point ZENNOTES_AUTH_TOKEN_FILE at a readable token file, or set ZENNOTES_ALLOW_INSECURE_NOAUTH=1 to override")
 	}

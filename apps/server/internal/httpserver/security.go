@@ -471,7 +471,7 @@ func (s *Server) sessionCookie(r *http.Request, token string, expiresAt time.Tim
 	cookie := &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    token,
-		Path:     "/api",
+		Path:     s.currentConfig().BasePath + "/api",
 		HttpOnly: true,
 		SameSite: http.SameSiteStrictMode,
 		Expires:  expiresAt,

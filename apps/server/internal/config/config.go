@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"encoding/json"
 	"io/fs"
 	"log"
@@ -42,6 +43,15 @@ type Config struct {
 	// restricted and can hang the process (e.g. unprivileged LXC). (#179)
 	DisableWatcher bool `json:"-"`
 
+	// PublicSite enables the opt-in public read-only site (ZENNOTES_PUBLIC_SITE).
+	// The admin app then lives under BasePath (default /admin).
+	PublicSite bool `json:"-"`
+	// PublicURL is the canonical public origin (ZENNOTES_PUBLIC_URL), no trailing slash.
+	PublicURL string `json:"-"`
+	// AdminProxyAuth acknowledges that an upstream proxy authenticates /admin
+	// (ZENNOTES_ADMIN_PROXY_AUTH), allowing PublicSite without an auth token.
+	AdminProxyAuth bool `json:"-"`
+
 	// Limits and security knobs.
 	MaxAssetBytes  int64       `json:"-"`
 	MaxNoteBytes   int64       `json:"-"`
@@ -68,6 +78,25 @@ func configFilePath() string {
 // host config file (e.g. /data/sessions.json alongside /data/server.json).
 func SessionsPath() string {
 	return filepath.Join(filepath.Dir(configFilePath()), "sessions.json")
+}
+
+// PublicSitePath is where the public-site rules live, next to the host config.
+func PublicSitePath() string {
+	return filepath.Join(filepath.Dir(configFilePath()), "public-site.json")
+}
+
+// ValidatePublicSite refuses unsafe public-site configurations.
+func ValidatePublicSite(cfg Config) error {
+	if !cfg.PublicSite {
+		return nil
+	}
+	if cfg.BasePath == "" {
+		return errors.New("public site requires the admin app under a non-root base path (e.g. ZENNOTES_BASE_PATH=/admin)")
+	}
+	if strings.TrimSpace(cfg.AuthToken) == "" && !cfg.AdminProxyAuth {
+		return errors.New("refusing to start the public site without admin auth; set ZENNOTES_AUTH_TOKEN, or set ZENNOTES_ADMIN_PROXY_AUTH=1 if a reverse proxy authenticates the admin path")
+	}
+	return nil
 }
 
 func Load() Config {
@@ -111,6 +140,12 @@ func Load() Config {
 		cfg.BasePath = v
 	}
 	cfg.BasePath = NormalizeBasePath(cfg.BasePath)
+	cfg.PublicSite = envEnabled("ZENNOTES_PUBLIC_SITE")
+	if cfg.PublicSite && cfg.BasePath == "" {
+		cfg.BasePath = "/admin"
+	}
+	cfg.PublicURL = strings.TrimRight(strings.TrimSpace(os.Getenv("ZENNOTES_PUBLIC_URL")), "/")
+	cfg.AdminProxyAuth = envEnabled("ZENNOTES_ADMIN_PROXY_AUTH")
 	if v := os.Getenv("ZENNOTES_AUTH_TOKEN"); v != "" {
 		cfg.AuthToken = v
 		cfg.AuthTokenSource = AuthTokenSourceEnv

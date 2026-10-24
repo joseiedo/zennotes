@@ -129,3 +129,48 @@ func TestRootDeploymentHasNoBasePathHint(t *testing.T) {
 		t.Fatalf("root deployment should not inject base path meta, got:\n%s", string(body[:n]))
 	}
 }
+
+func TestBasePathSessionCookiePath(t *testing.T) {
+	for _, tc := range []struct{ base, wantPath string }{
+		{"/admin", "/admin/api"},
+		{"", "/api"},
+	} {
+		cfg := config.Config{
+			VaultPath: t.TempDir(),
+			Bind:      "127.0.0.1:0",
+			BasePath:  tc.base,
+			AuthToken: "tok",
+		}
+		v, err := vault.New(cfg.VaultPath, vault.Options{})
+		if err != nil {
+			t.Fatalf("vault.New: %v", err)
+		}
+		static := fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("<html></html>")}}
+		srv := httptest.NewServer(New(v, nil, fs.FS(static), cfg).Router())
+
+		resp, err := http.Post(srv.URL+tc.base+"/api/session/login", "application/json", strings.NewReader(`{"token":"tok"}`))
+		if err != nil {
+			t.Fatalf("login: %v", err)
+		}
+		resp.Body.Close()
+		cookies := resp.Cookies()
+		if resp.StatusCode != http.StatusOK || len(cookies) == 0 {
+			t.Fatalf("base %q: login status %d, cookies %d", tc.base, resp.StatusCode, len(cookies))
+		}
+		if cookies[0].Path != tc.wantPath {
+			t.Fatalf("base %q: cookie path = %q, want %q", tc.base, cookies[0].Path, tc.wantPath)
+		}
+
+		req, _ := http.NewRequest(http.MethodGet, srv.URL+tc.base+"/api/vault", nil)
+		req.AddCookie(cookies[0])
+		got, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("vault: %v", err)
+		}
+		got.Body.Close()
+		if got.StatusCode != http.StatusOK {
+			t.Fatalf("base %q: vault with cookie = %d", tc.base, got.StatusCode)
+		}
+		srv.Close()
+	}
+}

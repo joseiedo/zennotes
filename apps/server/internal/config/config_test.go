@@ -4,6 +4,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -188,5 +189,70 @@ func TestPersistSessionsFlagAndPath(t *testing.T) {
 	}
 	if got, want := SessionsPath(), filepath.Join(filepath.Dir(cfgPath), "sessions.json"); got != want {
 		t.Fatalf("SessionsPath = %q, want %q", got, want)
+	}
+}
+
+func isolateConfig(t *testing.T) {
+	t.Helper()
+	t.Setenv("ZENNOTES_CONFIG_PATH", filepath.Join(t.TempDir(), "server.json"))
+	t.Setenv("ZENNOTES_BASE_PATH", "")
+	t.Setenv("ZENNOTES_PUBLIC_SITE", "")
+	t.Setenv("ZENNOTES_PUBLIC_URL", "")
+	t.Setenv("ZENNOTES_ADMIN_PROXY_AUTH", "")
+}
+
+func TestPublicSiteDefaultsBasePathToAdmin(t *testing.T) {
+	isolateConfig(t)
+	t.Setenv("ZENNOTES_PUBLIC_SITE", "1")
+	cfg := Load()
+	if cfg.BasePath != "/admin" || !cfg.PublicSite {
+		t.Fatalf("got BasePath=%q PublicSite=%v", cfg.BasePath, cfg.PublicSite)
+	}
+}
+
+func TestPublicSiteKeepsExplicitBasePath(t *testing.T) {
+	isolateConfig(t)
+	t.Setenv("ZENNOTES_PUBLIC_SITE", "1")
+	t.Setenv("ZENNOTES_BASE_PATH", "/zen")
+	if got := Load().BasePath; got != "/zen" {
+		t.Fatalf("BasePath = %q", got)
+	}
+}
+
+func TestPublicSiteOffKeepsRoot(t *testing.T) {
+	isolateConfig(t)
+	cfg := Load()
+	if cfg.BasePath != "" || cfg.PublicSite {
+		t.Fatalf("got BasePath=%q PublicSite=%v", cfg.BasePath, cfg.PublicSite)
+	}
+}
+
+func TestValidatePublicSiteRefusesNoAuth(t *testing.T) {
+	err := ValidatePublicSite(Config{PublicSite: true, BasePath: "/admin"})
+	if err == nil || !strings.Contains(err.Error(), "ZENNOTES_AUTH_TOKEN") || !strings.Contains(err.Error(), "ZENNOTES_ADMIN_PROXY_AUTH") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := ValidatePublicSite(Config{PublicSite: true, BasePath: "/admin", AdminProxyAuth: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidatePublicSite(Config{PublicSite: true, BasePath: "/admin", AuthToken: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidatePublicSite(Config{}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestValidatePublicSiteRefusesRootBasePath(t *testing.T) {
+	if err := ValidatePublicSite(Config{PublicSite: true, AuthToken: "x", BasePath: ""}); err == nil {
+		t.Fatal("expected error for root base path")
+	}
+}
+
+func TestLoadPublicURL(t *testing.T) {
+	isolateConfig(t)
+	t.Setenv("ZENNOTES_PUBLIC_URL", "https://notes.example.com/")
+	if got := Load().PublicURL; got != "https://notes.example.com" {
+		t.Fatalf("PublicURL = %q", got)
 	}
 }
