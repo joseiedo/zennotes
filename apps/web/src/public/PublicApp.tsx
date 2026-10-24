@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
+import { Backlinks } from './Backlinks'
+import { SearchBox } from './SearchBox'
 import { fetchNote, fetchSite, type PublicNote, type PublicSite } from './api'
 import { NoteView, type ThemeMode } from './NoteView'
 import { NotFound } from './NotFound'
@@ -161,7 +163,11 @@ export function PublicApp(): JSX.Element {
           <path d="M2 4h12M2 8h12M2 12h12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
         </svg>
       </button>
-      <Sidebar notes={site?.notes ?? []} currentPath={currentPath} />
+      <Sidebar
+        notes={site?.notes ?? []}
+        currentPath={currentPath}
+        searchSlot={<SearchBox onOpen={navigate} />}
+      />
       <main className="zn-main">
         {siteError ? (
           <div className="zn-message" role="alert">
@@ -179,8 +185,7 @@ export function PublicApp(): JSX.Element {
         ) : (
           <>
             <NoteView note={view.note} notes={site!.notes} mode={mode} hash={loc.hash} navKey={loc.nav} />
-            {/* "Linked from" backlinks (Task 9). */}
-            <section className="zn-backlinks-slot" data-slot="backlinks" />
+            <Backlinks notePath={view.note.path} notes={site!.notes} />
           </>
         )}
       </main>

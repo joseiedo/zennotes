@@ -85,7 +85,7 @@ export function Sidebar({
 }: {
   notes: PublicNoteMeta[]
   currentPath: string | null
-  /** Placeholder for the search box (Task 9). */
+  /** Search box rendered above the tree. */
   searchSlot?: React.ReactNode
 }): JSX.Element {
   const tree = useMemo(() => buildTree(notes), [notes])

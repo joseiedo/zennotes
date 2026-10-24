@@ -43,8 +43,7 @@ body {
   text-decoration: none;
 }
 
-.zn-search-slot:empty,
-.zn-backlinks-slot:empty {
+.zn-search-slot:empty {
   display: none;
 }
 
@@ -193,4 +192,79 @@ body {
   .zn-main .prose-zen {
     padding: 3.5rem 1.1rem 30vh;
   }
+}
+
+.zn-search {
+  padding: 0 0.5rem 0.75rem;
+}
+
+.zn-search-input {
+  width: 100%;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid rgb(var(--z-bg-2));
+  border-radius: 0.4rem;
+  background: rgb(var(--z-bg));
+  color: rgb(var(--z-fg));
+  font: inherit;
+}
+
+.zn-search-msg {
+  margin: 0.5rem 0.25rem 0;
+  color: rgb(var(--z-grey-1));
+  font-size: 0.8rem;
+}
+
+.zn-search-results {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+}
+
+.zn-search-results a {
+  display: block;
+  padding: 0.35rem 0.5rem;
+  border-radius: 0.4rem;
+  color: inherit;
+  text-decoration: none;
+}
+
+.zn-search-results a:hover {
+  background: rgb(var(--z-accent) / 0.12);
+}
+
+.zn-search-title {
+  display: block;
+  font-weight: 600;
+}
+
+.zn-search-line {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: rgb(var(--z-grey-1));
+  font-size: 0.8rem;
+}
+
+.zn-backlinks {
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: 0 1.5rem 30vh;
+}
+
+.zn-backlinks h2 {
+  margin: 0 0 0.5rem;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: rgb(var(--z-grey-1));
+}
+
+.zn-backlinks ul {
+  margin: 0;
+  padding-left: 1.1rem;
+}
+
+.zn-backlinks a {
+  color: rgb(var(--z-accent));
 }

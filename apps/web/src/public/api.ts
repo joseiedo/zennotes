@@ -54,7 +54,19 @@ export function assetUrl(notePath: string, href: string): string {
   return `${API}/asset?note=${encodeURIComponent(notePath)}&href=${encodeURIComponent(href)}`
 }
 
+/** The server answered 429: too many searches from this client. */
+export class SearchRateLimitedError extends Error {
+  constructor() {
+    super('search rate limited')
+  }
+}
+
 export async function searchNotes(q: string): Promise<PublicSearchHit[]> {
-  const hits = await getJSON<PublicSearchHit[]>(`${API}/search?q=${encodeURIComponent(q)}`)
+  const url = `${API}/search?q=${encodeURIComponent(q)}`
+  const res = await fetch(url, { headers: { Accept: 'application/json' } })
+  if (res.status === 429) throw new SearchRateLimitedError()
+  if (res.status === 404) return []
+  if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`)
+  const hits = (await res.json()) as PublicSearchHit[]
   return Array.isArray(hits) ? hits : []
 }
