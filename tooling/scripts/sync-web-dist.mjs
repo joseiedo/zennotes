@@ -7,8 +7,17 @@ import { withWebDistLock } from './web-dist-lock.mjs'
 
 const scriptDir = dirname(fileURLToPath(import.meta.url))
 const repoRoot = resolve(scriptDir, '..', '..')
-const webDist = resolve(repoRoot, 'apps/web/dist')
-const serverDist = resolve(repoRoot, 'apps/server/web/dist')
+// Admin bundle and the separate public-site bundle are synced the same way.
+const targets = [
+  {
+    webDist: resolve(repoRoot, 'apps/web/dist'),
+    serverDist: resolve(repoRoot, 'apps/server/web/dist')
+  },
+  {
+    webDist: resolve(repoRoot, 'apps/web/dist-public'),
+    serverDist: resolve(repoRoot, 'apps/server/web/dist-public')
+  }
+]
 
 // `apps/server` runs `prepare-web` from BOTH `typecheck` and `test:run`, and
 // turbo schedules those two tasks concurrently. A plain `rm` followed by `cp`
@@ -63,7 +72,7 @@ async function treeSignature(dir) {
 
 // Staging directories from a run that died mid-copy. Nobody else can be staging
 // while we hold the lock, so anything still lying around is debris.
-async function sweepStagingDebris() {
+async function sweepStagingDebris(serverDist) {
   const parent = dirname(serverDist)
   const prefixes = [`${basename(serverDist)}.stage-`, `${basename(serverDist)}.retired-`]
   let entries
@@ -79,7 +88,7 @@ async function sweepStagingDebris() {
   }
 }
 
-async function retire(retired) {
+async function retire(retired, serverDist) {
   try {
     await rename(serverDist, retired)
   } catch (err) {
@@ -92,7 +101,7 @@ async function retire(retired) {
   }
 }
 
-async function promote(stage) {
+async function promote(stage, serverDist) {
   try {
     await rename(stage, serverDist)
   } catch (err) {
@@ -102,8 +111,8 @@ async function promote(stage) {
   }
 }
 
-async function main() {
-  await sweepStagingDebris()
+async function syncOne({ webDist, serverDist }) {
+  await sweepStagingDebris(serverDist)
 
   const source = await treeSignature(webDist)
   if (source === null) {
@@ -118,14 +127,18 @@ async function main() {
   await rm(stage, rmOptions)
   try {
     await cp(webDist, stage, { recursive: true, force: true })
-    await retire(retired)
-    await promote(stage)
+    await retire(retired, serverDist)
+    await promote(stage, serverDist)
   } finally {
     // A failed copy or swap must not leave a staging tree behind for the next
     // run to trip over.
     await rm(stage, rmOptions)
     await rm(retired, rmOptions)
   }
+}
+
+async function main() {
+  for (const target of targets) await syncOne(target)
 }
 
 try {

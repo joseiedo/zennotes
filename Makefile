@@ -154,10 +154,10 @@ rebuild:
 
 nuke:
 	@$(COMPOSE) down --rmi local --volumes || true
-	@rm -rf apps/web/dist apps/server/bin apps/server/web/dist $(DATA)
+	@rm -rf apps/web/dist apps/web/dist-public apps/server/bin apps/server/web/dist apps/server/web/dist-public $(DATA)
 
 server-build: web-build
 	npm run build --workspace @zennotes/server
 
 clean:
-	rm -rf apps/web/dist apps/server/bin apps/server/web/dist
+	rm -rf apps/web/dist apps/web/dist-public apps/server/bin apps/server/web/dist apps/server/web/dist-public

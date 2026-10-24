@@ -43,6 +43,7 @@ RUN go mod download
 WORKDIR /app
 COPY apps/server apps/server
 COPY --from=web-build /app/apps/web/dist/ /app/apps/server/web/dist/
+COPY --from=web-build /app/apps/web/dist-public/ /app/apps/server/web/dist-public/
 
 # TARGETARCH is provided by buildx (e.g. amd64, arm64) for the image being built.
 ARG TARGETARCH

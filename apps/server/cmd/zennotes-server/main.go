@@ -67,6 +67,14 @@ func main() {
 	}
 
 	srv := httpserver.New(v, w, dist, cfg)
+	if cfg.PublicSite {
+		publicDist, err := web.PublicDist()
+		if err != nil {
+			log.Printf("warning: embedded public site bundle not available: %v", err)
+		} else {
+			srv.SetPublicStatic(publicDist)
+		}
+	}
 	httpSrv := &http.Server{
 		Addr:         cfg.Bind,
 		Handler:      srv.Router(),

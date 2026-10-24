@@ -4,6 +4,8 @@ dist
 .turbo
 apps/*/.turbo
 apps/web/dist
+apps/web/dist-public
+apps/server/web/dist-public
 # Staging/retired trees and the lock from tooling/scripts/sync-web-dist.mjs.
 # The bare `dist` above does not cover these suffixed names.
 dist.stage-*

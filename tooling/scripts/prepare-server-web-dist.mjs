@@ -9,6 +9,7 @@ import { webDistLockEnv, withWebDistLock } from './web-dist-lock.mjs'
 const scriptDir = dirname(fileURLToPath(import.meta.url))
 const repoRoot = resolve(scriptDir, '..', '..')
 const webDistIndex = resolve(repoRoot, 'apps/web/dist/index.html')
+const publicDistIndex = resolve(repoRoot, 'apps/web/dist-public/public.html')
 const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm'
 
 async function fileExists(path) {
@@ -47,7 +48,7 @@ function run(command, args, cwd = repoRoot, options = {}) {
 // only syncs. The child processes inherit the lock rather than wait on it.
 await withWebDistLock(async (lock) => {
   const env = webDistLockEnv(lock)
-  if (!(await fileExists(webDistIndex))) {
+  if (!(await fileExists(webDistIndex)) || !(await fileExists(publicDistIndex))) {
     await run(npmCommand, ['run', 'build', '--workspace', '@zennotes/web'], repoRoot, {
       shell: process.platform === 'win32',
       env
