@@ -33,9 +33,17 @@ function useThemeMode(): ThemeMode {
 interface Loc {
   pathname: string
   hash: string
+  /** Navigation counter: same-URL navigations (re-clicking an anchor) still
+   *  re-trigger scrolling. */
+  nav: number
 }
 
-const currentLoc = (): Loc => ({ pathname: window.location.pathname, hash: window.location.hash })
+let navCounter = 0
+const currentLoc = (): Loc => ({
+  pathname: window.location.pathname,
+  hash: window.location.hash,
+  nav: ++navCounter
+})
 
 /** Same-origin page links are routed client-side; API/static URLs, new-tab
  *  links and modified clicks keep the browser's default. */
@@ -83,7 +91,7 @@ export function PublicApp(): JSX.Element {
     if (next !== window.location.pathname + window.location.hash) {
       window.history.pushState(null, '', next)
     }
-    setLoc({ pathname: url.pathname, hash: url.hash })
+    setLoc({ pathname: url.pathname, hash: url.hash, nav: ++navCounter })
     setNavOpen(false)
     if (!url.hash) window.scrollTo(0, 0)
   }, [])
@@ -170,7 +178,7 @@ export function PublicApp(): JSX.Element {
           <NotFound />
         ) : (
           <>
-            <NoteView note={view.note} notes={site!.notes} mode={mode} hash={loc.hash} />
+            <NoteView note={view.note} notes={site!.notes} mode={mode} hash={loc.hash} navKey={loc.nav} />
             {/* "Linked from" backlinks (Task 9). */}
             <section className="zn-backlinks-slot" data-slot="backlinks" />
           </>

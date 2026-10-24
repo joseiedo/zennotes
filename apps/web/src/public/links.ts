@@ -385,3 +385,23 @@ export function rewriteRenderedLinks(root: HTMLElement, ctx: RewriteContext): vo
     host.dataset.znAssetUrl = assetUrl(ownerNotePath(host, ctx), originalHref(target, refs))
   })
 }
+
+/** The element an in-page `#hash` points at: an element with that id or name
+ *  (GFM footnote refs/back-refs, raw anchors), as the app's Preview resolves
+ *  them, else a heading whose text matches (wikilink `#Heading` anchors —
+ *  the renderer emits no heading ids). */
+export function findHashTarget(root: HTMLElement, hash: string): HTMLElement | null {
+  if (!hash || hash === '#') return null
+  const raw = hash.startsWith('#') ? hash.slice(1) : hash
+  const id = safeDecode(raw)
+  for (const el of Array.from(root.querySelectorAll<HTMLElement>('[id],[name]'))) {
+    if (el.id === id || el.getAttribute('name') === id) return el
+  }
+  const needle = id.trim().toLowerCase()
+  if (!needle) return null
+  return (
+    Array.from(root.querySelectorAll<HTMLElement>('h1,h2,h3,h4,h5,h6')).find(
+      (h) => (h.textContent ?? '').trim().toLowerCase() === needle
+    ) ?? null
+  )
+}

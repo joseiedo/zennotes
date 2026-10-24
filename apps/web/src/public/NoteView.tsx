@@ -15,7 +15,12 @@ import {
 import { renderBookmarks, renderEmbeds } from '@renderer/lib/embed-renderers'
 import { extractObsidianExcalidrawScene, parseExcalidrawDocument } from '@shared/excalidraw'
 import { fetchNote, type PublicNote, type PublicNoteMeta } from './api'
-import { markUnresolvedEmbeds, resolvePublicNote, rewriteRenderedLinks } from './links'
+import {
+  findHashTarget,
+  markUnresolvedEmbeds,
+  resolvePublicNote,
+  rewriteRenderedLinks
+} from './links'
 
 export type ThemeMode = 'light' | 'dark'
 
@@ -145,31 +150,19 @@ function PublicExcalidraw({
   )
 }
 
-function scrollToHeading(root: HTMLElement, hash: string): void {
-  if (!hash || hash === '#') return
-  let needle = hash.slice(1)
-  try {
-    needle = decodeURIComponent(needle)
-  } catch {
-    /* use raw */
-  }
-  needle = needle.trim().toLowerCase()
-  const heading = Array.from(root.querySelectorAll<HTMLElement>('h1,h2,h3,h4,h5,h6')).find(
-    (h) => (h.textContent ?? '').trim().toLowerCase() === needle
-  )
-  heading?.scrollIntoView({ block: 'start' })
-}
-
 export function NoteView({
   note,
   notes,
   mode,
-  hash
+  hash,
+  navKey = 0
 }: {
   note: PublicNote
   notes: PublicNoteMeta[]
   mode: ThemeMode
   hash: string
+  /** Bumped on every navigation so re-clicking the same #anchor rescrolls. */
+  navKey?: number
 }): JSX.Element {
   const ref = useRef<HTMLElement | null>(null)
   const [rendered, setRendered] = useState(0)
@@ -237,8 +230,9 @@ export function NoteView({
 
   useEffect(() => {
     if (!ref.current) return
-    if (hash) scrollToHeading(ref.current, hash)
-  }, [hash, rendered])
+    const dest = findHashTarget(ref.current, hash)
+    if (dest) dest.scrollIntoView({ block: dest.matches('h1,h2,h3,h4,h5,h6') ? 'start' : 'center' })
+  }, [hash, navKey, rendered])
 
   const onClick = (event: React.MouseEvent<HTMLElement>): void => {
     const target = event.target as HTMLElement
