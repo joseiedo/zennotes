@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"path/filepath"
 	"reflect"
@@ -14,13 +15,19 @@ import (
 	"github.com/ZenNotes/zennotes/apps/server/internal/vault"
 )
 
-func newPublicSiteAdmin(t *testing.T, on bool) (*Server, *httptest.Server, http.CookieJar) {
+// newPublicSiteAdmin returns the server, the admin base URL (under /admin when
+// the public site is on, since the public site then owns "/") and a logged-in
+// cookie jar.
+func newPublicSiteAdmin(t *testing.T, on bool) (*Server, string, http.CookieJar) {
 	t.Helper()
 	cfg := config.Config{
 		VaultPath:  t.TempDir(),
 		Bind:       "127.0.0.1:0",
 		AuthToken:  "secret-token",
 		PublicSite: on,
+	}
+	if on {
+		cfg.BasePath = "/admin"
 	}
 	v, err := vault.New(cfg.VaultPath, vault.Options{})
 	if err != nil {
@@ -32,10 +39,30 @@ func newPublicSiteAdmin(t *testing.T, on bool) (*Server, *httptest.Server, http.
 	}
 	srv := httptest.NewServer(s.Router())
 	t.Cleanup(srv.Close)
-	return s, srv, loginAndJar(t, srv, "secret-token")
+	base := srv.URL + cfg.BasePath
+	return s, base, loginAtBase(t, base, "secret-token")
 }
 
-func psDo(t *testing.T, srv *httptest.Server, jar http.CookieJar, method string, body any) (int, map[string]any) {
+func loginAtBase(t *testing.T, base, token string) http.CookieJar {
+	t.Helper()
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Jar: jar}
+	body, _ := json.Marshal(map[string]string{"token": token})
+	resp, err := client.Post(base+"/api/session/login", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("login: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("login status: %d", resp.StatusCode)
+	}
+	return jar
+}
+
+func psDo(t *testing.T, base string, jar http.CookieJar, method string, body any) (int, map[string]any) {
 	t.Helper()
 	var rdr *bytes.Reader
 	if body != nil {
@@ -44,7 +71,7 @@ func psDo(t *testing.T, srv *httptest.Server, jar http.CookieJar, method string,
 	} else {
 		rdr = bytes.NewReader(nil)
 	}
-	req, _ := http.NewRequest(method, srv.URL+"/api/public-site", rdr)
+	req, _ := http.NewRequest(method, base+"/api/public-site", rdr)
 	req.Header.Set("Content-Type", "application/json")
 	client := &http.Client{}
 	if jar != nil {
@@ -133,7 +160,7 @@ func TestPublicSiteAdminRejectsBadKey(t *testing.T) {
 func TestCapabilitiesReportPublicSite(t *testing.T) {
 	for _, on := range []bool{true, false} {
 		_, srv, _ := newPublicSiteAdmin(t, on)
-		resp, err := http.Get(srv.URL + "/api/capabilities")
+		resp, err := http.Get(srv + "/api/capabilities")
 		if err != nil {
 			t.Fatal(err)
 		}

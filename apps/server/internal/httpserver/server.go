@@ -46,6 +46,15 @@ type Server struct {
 	wsRejectLimiter *attemptLimiter
 	loggedOrigins   sync.Map          // origin -> struct{}; dedupes CORS-rejection logs
 	publicRules     *publicsite.Store // nil unless cfg.PublicSite
+	publicStatic    fs.FS             // public site bundle (public.html + assets); nil → built-in shell
+}
+
+// SetPublicStatic sets the public site bundle served at /_zn/static/ and used
+// for the page shell. nil falls back to a minimal built-in shell.
+func (s *Server) SetPublicStatic(fsys fs.FS) {
+	s.mu.Lock()
+	s.publicStatic = fsys
+	s.mu.Unlock()
 }
 
 func init() {
@@ -164,6 +173,10 @@ func (s *Server) Router() http.Handler {
 		inner.Get("/*", s.serveStatic)
 	}
 
+	if s.currentConfig().PublicSite {
+		return s.publicSiteRouter(inner)
+	}
+
 	outer := chi.NewRouter()
 	outer.Use(middleware.RequestID)
 	// Intentionally not using middleware.RealIP: it rewrites
@@ -180,6 +193,22 @@ func (s *Server) Router() http.Handler {
 		return outer
 	}
 	outer.Mount("/", inner)
+	return outer
+}
+
+// publicSiteRouter mounts the admin app under the base path (never "/") and
+// the public site at "/". The admin side keeps its security headers and CORS;
+// the public side gets neither CORS nor auth.
+func (s *Server) publicSiteRouter(inner http.Handler) http.Handler {
+	basePath := s.currentConfig().BasePath
+	if basePath == "" || basePath == "/" {
+		basePath = "/admin"
+	}
+	outer := chi.NewRouter()
+	outer.Use(middleware.RequestID)
+	outer.Use(middleware.Recoverer)
+	outer.Mount(basePath, s.securityHeadersMiddleware(s.corsMiddleware(inner)))
+	outer.Mount("/", s.publicRouter())
 	return outer
 }
 

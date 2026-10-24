@@ -310,6 +310,74 @@ list, see:
 - [At-Rest Encryption](./at-rest-encryption.md)
 - [Security Reference](../reference/security-reference.md)
 
+## Publish a public read-only site
+
+ZenNotes can also serve a read-only website of the notes you choose, at the
+domain root, while the full app moves under an admin path. It is off by
+default; nothing changes unless you turn it on.
+
+Environment variables:
+
+- `ZENNOTES_PUBLIC_SITE=1` — turn the public site on. The site is served at
+  `/` and the admin app (UI, API, WebSocket) moves under `ZENNOTES_BASE_PATH`,
+  which defaults to `/admin` when the public site is on. An explicit non-root
+  `ZENNOTES_BASE_PATH` is respected; the admin app is never served at `/`.
+- `ZENNOTES_PUBLIC_URL` — the public origin, e.g. `https://notes.example.com`
+  (no trailing slash). Used for canonical links and social-preview (`og:url`)
+  tags. Without it those tags are omitted.
+- `ZENNOTES_ADMIN_PROXY_AUTH=1` — declare that your reverse proxy
+  authenticates the admin path. Only needed when you run without
+  `ZENNOTES_AUTH_TOKEN`.
+
+**No-auth refusal.** With the public site on, the server refuses to start
+unless the admin app is protected: set `ZENNOTES_AUTH_TOKEN` (or
+`ZENNOTES_AUTH_TOKEN_FILE`), or set `ZENNOTES_ADMIN_PROXY_AUTH=1` when a proxy
+in front already authenticates `/admin`. This keeps a public deployment from
+exposing an open admin API.
+
+**What is public.** Nothing, until you mark it: choose public and hidden
+folders/notes and an optional home note in the admin app. The rules are stored
+in `public-site.json` next to the host config (`server.json`, i.e. on the
+`/data` volume in Docker), keyed by the vault's absolute path. A missing or
+unreadable rules file means nothing is public. Trashed notes, dot-folders,
+comments and frontmatter are never published; Excalidraw drawings and
+attachments are only served when a public note embeds them. Private, missing
+and malformed URLs all return the same 404.
+
+The public site reserves `/_zn/` (`/_zn/api/*` and `/_zn/static/*`) and
+serves a `/sw.js` that unregisters any service worker an earlier root-mounted
+install left behind, so old browser tabs switch to the public site cleanly.
+
+Example Nginx config, protecting the admin path at the proxy (when you rely on
+`ZENNOTES_ADMIN_PROXY_AUTH=1`; with a token you can drop `auth_basic`):
+
+```nginx
+server {
+    server_name notes.example.com;
+
+    location /admin/ {
+        auth_basic           "ZenNotes admin";
+        auth_basic_user_file /etc/nginx/zennotes.htpasswd;
+        proxy_pass         http://127.0.0.1:7878;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+        proxy_set_header   Upgrade           $http_upgrade;
+        proxy_set_header   Connection        "upgrade";
+    }
+
+    location / {
+        proxy_pass       http://127.0.0.1:7878;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+Open the admin app at `https://notes.example.com/admin/`.
+
 ## Common problems
 
 ### I have to re-enter the token after every restart
