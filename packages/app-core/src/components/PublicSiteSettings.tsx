@@ -22,8 +22,10 @@ export interface PublicTreeNode {
  *  no dot-segments. Mirrors the server's always-private rules. */
 export function isPublicPageCandidate(note: NoteMeta): boolean {
   if (note.folder === "trash") return false;
-  const lower = note.path.toLowerCase();
-  if (!lower.endsWith(".md") || lower.endsWith(".excalidraw.md")) return false;
+  // Case-sensitive ".md", like the server's IsPublicNote; drawings are
+  // matched case-insensitively there too.
+  if (!note.path.endsWith(".md")) return false;
+  if (note.path.toLowerCase().endsWith(".excalidraw.md")) return false;
   return !note.path.split("/").some((s) => s === "" || s.startsWith("."));
 }
 

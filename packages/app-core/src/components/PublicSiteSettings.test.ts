@@ -21,6 +21,11 @@ describe('isPublicPageCandidate', () => {
     expect(isPublicPageCandidate(n('Blog/a.excalidraw.md'))).toBe(false)
     expect(isPublicPageCandidate(n('Blog/.hid/a.md'))).toBe(false)
   })
+  it('matches the server: the .md extension is case-sensitive, drawings are not', () => {
+    expect(isPublicPageCandidate(n('Blog/A.MD'))).toBe(false)
+    expect(isPublicPageCandidate(n('Blog/a.Md'))).toBe(false)
+    expect(isPublicPageCandidate(n('Blog/d.Excalidraw.md'))).toBe(false)
+  })
 })
 
 describe('buildPublicTree', () => {
