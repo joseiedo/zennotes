@@ -36,8 +36,10 @@ const publicKillSwitchSW = `self.addEventListener('install',()=>self.skipWaiting
 
 var publicNotFoundJSON = []byte(`{"error":"not found"}` + "\n")
 
+// publicContentSecurityPolicy is the admin policy: remote https images in
+// public notes load as they do in the app (ruling F3).
 func publicContentSecurityPolicy() string {
-	return strings.Replace(contentSecurityPolicy(), "img-src 'self' data: blob: https:", "img-src 'self' data: blob:", 1)
+	return contentSecurityPolicy()
 }
 
 // publicSecurityHeaders mirrors securityHeadersMiddleware with the public CSP.

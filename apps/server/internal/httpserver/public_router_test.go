@@ -352,7 +352,8 @@ func TestPublicSiteMovesAdminUnderBasePath(t *testing.T) {
 	if resp.Header.Get("Access-Control-Allow-Origin") != "" || resp.Header.Get("Set-Cookie") != "" {
 		t.Fatalf("public response carried CORS/cookie headers: %v", resp.Header)
 	}
-	if csp := resp.Header.Get("Content-Security-Policy"); !strings.Contains(csp, "img-src 'self' data: blob:;") {
+	// Remote https images in public notes load, as in the admin app (F3).
+	if csp := resp.Header.Get("Content-Security-Policy"); !strings.Contains(csp, "img-src 'self' data: blob: https:;") {
 		t.Fatalf("public CSP img-src: %q", csp)
 	}
 }
