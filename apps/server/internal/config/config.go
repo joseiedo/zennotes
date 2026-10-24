@@ -27,17 +27,21 @@ const (
 )
 
 type Config struct {
-	VaultPath           string   `json:"vaultPath"`
-	DefaultVaultPath    string   `json:"-"`
-	BrowseRoots         []string `json:"-"`
-	AllowedOrigins      []string `json:"-"`
-	Bind                string   `json:"bind"`
-	BasePath            string   `json:"basePath"`
-	AuthToken           string   `json:"authToken"`
-	AuthTokenSource     string   `json:"-"`
-	AllowUnscopedBrowse bool     `json:"-"`
-	AllowInsecureNoAuth bool     `json:"-"`
-	DevMode             bool     `json:"-"`
+	VaultPath        string   `json:"vaultPath"`
+	DefaultVaultPath string   `json:"-"`
+	BrowseRoots      []string `json:"-"`
+	AllowedOrigins   []string `json:"-"`
+	Bind             string   `json:"bind"`
+	BasePath         string   `json:"basePath"`
+	// BasePathDefaulted marks BasePath as the in-memory /admin default the
+	// public site implies, not a configured value. SaveHost never persists it,
+	// so turning the public site off brings the admin app back to "/".
+	BasePathDefaulted   bool   `json:"-"`
+	AuthToken           string `json:"authToken"`
+	AuthTokenSource     string `json:"-"`
+	AllowUnscopedBrowse bool   `json:"-"`
+	AllowInsecureNoAuth bool   `json:"-"`
+	DevMode             bool   `json:"-"`
 	// DisableWatcher turns off the inotify file watcher (ZENNOTES_DISABLE_WATCHER).
 	// Live updates stop; the vault is still fully served. Useful where inotify is
 	// restricted and can hang the process (e.g. unprivileged LXC). (#179)
@@ -143,6 +147,7 @@ func Load() Config {
 	cfg.PublicSite = envEnabled("ZENNOTES_PUBLIC_SITE")
 	if cfg.PublicSite && cfg.BasePath == "" {
 		cfg.BasePath = "/admin"
+		cfg.BasePathDefaulted = true
 	}
 	cfg.PublicURL = strings.TrimRight(strings.TrimSpace(os.Getenv("ZENNOTES_PUBLIC_URL")), "/")
 	cfg.AdminProxyAuth = envEnabled("ZENNOTES_ADMIN_PROXY_AUTH")
@@ -200,6 +205,9 @@ func SaveHost(cfg Config) error {
 	target := configFilePath()
 	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
 		return err
+	}
+	if cfg.BasePathDefaulted {
+		cfg.BasePath = ""
 	}
 	out, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {

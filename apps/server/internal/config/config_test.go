@@ -256,3 +256,37 @@ func TestLoadPublicURL(t *testing.T) {
 		t.Fatalf("PublicURL = %q", got)
 	}
 }
+
+// The implicit /admin default must never be persisted: turning the public site
+// off later has to bring the admin app back to "/" (I1).
+func TestSaveHostDoesNotPersistImplicitAdminBasePath(t *testing.T) {
+	isolateConfig(t)
+	t.Setenv("ZENNOTES_AUTH_TOKEN", "")
+	t.Setenv("ZENNOTES_PUBLIC_SITE", "1")
+	cfg := Load()
+	if cfg.BasePath != "/admin" {
+		t.Fatalf("BasePath = %q", cfg.BasePath)
+	}
+	if err := SaveHost(cfg); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ZENNOTES_PUBLIC_SITE", "")
+	if got := Load().BasePath; got != "" {
+		t.Fatalf("BasePath after disabling public site = %q, want \"\"", got)
+	}
+}
+
+func TestSaveHostKeepsExplicitBasePath(t *testing.T) {
+	isolateConfig(t)
+	t.Setenv("ZENNOTES_AUTH_TOKEN", "")
+	t.Setenv("ZENNOTES_PUBLIC_SITE", "1")
+	t.Setenv("ZENNOTES_BASE_PATH", "/zen")
+	if err := SaveHost(Load()); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ZENNOTES_PUBLIC_SITE", "")
+	t.Setenv("ZENNOTES_BASE_PATH", "")
+	if got := Load().BasePath; got != "/zen" {
+		t.Fatalf("BasePath = %q, want /zen", got)
+	}
+}
