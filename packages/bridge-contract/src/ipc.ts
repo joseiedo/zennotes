@@ -746,6 +746,8 @@ export interface ServerCapabilities {
   /** Server-side workflow file CRUD plus journalled apply/undo. Absent before
    *  2.29, where the web client must keep Workflows read-only. */
   supportsWorkflows?: boolean
+  /** Server runs with the opt-in public read-only site enabled. */
+  supportsPublicSite?: boolean
 }
 
 export interface ServerSessionStatus {

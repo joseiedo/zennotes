@@ -43,6 +43,7 @@ import {
   normalizeTypstPreambleFolder,
   resolveTypstPreambleFolder,
 } from "@shared/typst-preamble-folder";
+import { PublicSiteSettings } from "./PublicSiteSettings";
 import { useStore, refreshCustomThemes, refreshOverrides } from "../store";
 import {
   WORKFLOW_PRESETS,
@@ -435,6 +436,8 @@ export function SettingsModal(): JSX.Element {
     appInfo.runtime === "desktop" &&
     zenBridge.getCapabilities().supportsRemoteWorkspace;
   const supportsCloudSync = !!zenBridge.getCapabilities().supportsCloudSync;
+  const supportsPublicSite =
+    zenBridge.getCapabilities().supportsPublicSite === true;
   const setSettingsOpen = useStore((s) => s.setSettingsOpen);
   const openHelpView = useStore((s) => s.openHelpView);
   const vimMode = useStore((s) => s.vimMode);
@@ -3197,6 +3200,14 @@ export function SettingsModal(): JSX.Element {
           keywords: ["primary notes", "inbox", "vault root"],
         },
         {
+          id: "public-site",
+          title: "Public site",
+          description:
+            "Choose which folders and notes appear on the public read-only site.",
+          keywords: ["public", "publish", "share", "website", "home note"],
+          available: supportsPublicSite,
+        },
+        {
           id: "view-settings-scope",
           title: "View settings",
           description:
@@ -3677,7 +3688,7 @@ export function SettingsModal(): JSX.Element {
           title: "Notes",
           description:
             "How primary notes, new drawings and databases, and view preferences are organized.",
-          searchIds: ["primary-notes-location", "view-settings-scope"],
+          searchIds: ["primary-notes-location", "view-settings-scope", "public-site"],
           content: (
             <div className="space-y-6">
               <Section
@@ -3817,6 +3828,15 @@ export function SettingsModal(): JSX.Element {
                   />
                 )}
               </Section>
+              {supportsPublicSite && (
+                <Section
+                  title="Public site"
+                  description="Choose which folders and notes appear on the public read-only site."
+                  settingId="public-site"
+                >
+                  <PublicSiteSettings />
+                </Section>
+              )}
               <Section
                 title="View settings"
                 description="Whether note-list & view preferences are shared across all vaults or kept per vault."

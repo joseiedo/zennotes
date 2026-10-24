@@ -64,6 +64,7 @@ import type {
   WriteWorkflowInput
 } from './workflows'
 import type { VaultTask } from '@zennotes/shared-domain/tasks'
+import type { PublicMark, PublicSiteConfig } from '@zennotes/shared-domain/public-site-rules'
 import type {
   DatabaseDoc,
   DatabaseSidecar,
@@ -99,6 +100,9 @@ export interface ZenCapabilities {
   /** Local desktop support, or a web client paired with a server that owns
    *  workflow files and journalled apply/undo. */
   supportsWorkflows?: boolean
+  /** Server runs with the opt-in public read-only site; the admin app can
+   *  manage which notes are public. Web-only. */
+  supportsPublicSite?: boolean
 }
 
 export interface ZenAppInfo {
@@ -212,6 +216,12 @@ export interface ZenBridge {
    * workflow storage (older web servers and remote desktop workspaces).
    */
   listWorkflows(): Promise<WorkflowFile[]>
+  /** Public-site visibility rules. Web (server with the public site on) only. */
+  getPublicSiteConfig?(): Promise<PublicSiteConfig>
+  setPublicSiteConfig?(input: {
+    homeNote: string
+    rules: Record<string, PublicMark>
+  }): Promise<PublicSiteConfig>
   /** Create or overwrite a workflow file; returns the saved file. */
   writeWorkflow(input: WriteWorkflowInput): Promise<WorkflowFile>
   deleteWorkflow(sourcePath: string): Promise<void>

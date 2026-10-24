@@ -33,6 +33,7 @@ import type {
   WorkflowUndoResult,
   WriteWorkflowInput
 } from '@zennotes/bridge-contract/workflows'
+import type { PublicMark, PublicSiteConfig } from '@shared/public-site-rules'
 import { prepareWorkflowRun } from '@shared/workflows/prepare-run'
 import type {
   AppUpdateState,
@@ -94,7 +95,8 @@ const WEB_CAPABILITIES: ZenCapabilities = {
   supportsCliInstall: false,
   supportsCustomTemplates: false,
   supportsCustomCodeLanguages: false,
-  supportsWorkflows: false
+  supportsWorkflows: false,
+  supportsPublicSite: false
 }
 
 const WEB_APP_INFO: ZenAppInfo = {
@@ -747,6 +749,17 @@ async function listWorkflows(): Promise<WorkflowFile[]> {
   return jsonRequest<WorkflowFile[]>('/workflows')
 }
 
+function getPublicSiteConfig(): Promise<PublicSiteConfig> {
+  return jsonRequest<PublicSiteConfig>('/public-site')
+}
+
+function setPublicSiteConfig(input: {
+  homeNote: string
+  rules: Record<string, PublicMark>
+}): Promise<PublicSiteConfig> {
+  return jsonRequest<PublicSiteConfig>('/public-site', { method: 'PUT', body: input })
+}
+
 async function writeWorkflow(input: WriteWorkflowInput): Promise<WorkflowFile> {
   await requireServerWorkflowSupport()
   return jsonRequest<WorkflowFile>('/workflows/write', {
@@ -1373,7 +1386,8 @@ export const httpBridge: ZenBridge = {
   // never disagree about the same fact.
   getCapabilities: (): ZenCapabilities => ({
     ...WEB_CAPABILITIES,
-    supportsWorkflows: lastServerCapabilities?.supportsWorkflows === true
+    supportsWorkflows: lastServerCapabilities?.supportsWorkflows === true,
+    supportsPublicSite: lastServerCapabilities?.supportsPublicSite === true
   }),
   getAppInfo: (): ZenAppInfo => WEB_APP_INFO,
   platform,
@@ -1448,6 +1462,8 @@ export const httpBridge: ZenBridge = {
   generateDemoTour,
   removeDemoTour,
   listWorkflows,
+  getPublicSiteConfig,
+  setPublicSiteConfig,
   writeWorkflow,
   deleteWorkflow,
   applyWorkflow,
