@@ -190,6 +190,7 @@ func (s *Server) Router() http.Handler {
 	// clientAddressKey() does trust-aware extraction instead.
 	outer.Use(s.securityHeadersMiddleware)
 	outer.Use(s.corsMiddleware)
+	outer.Use(s.proxyAuthCSRFMiddleware)
 	outer.Use(middleware.Recoverer)
 
 	basePath := s.currentConfig().BasePath
@@ -212,7 +213,7 @@ func (s *Server) publicSiteRouter(inner http.Handler) http.Handler {
 	outer := chi.NewRouter()
 	outer.Use(middleware.RequestID)
 	outer.Use(middleware.Recoverer)
-	outer.Mount(basePath, s.securityHeadersMiddleware(s.corsMiddleware(inner)))
+	outer.Mount(basePath, s.securityHeadersMiddleware(s.corsMiddleware(s.proxyAuthCSRFMiddleware(inner))))
 	outer.Mount("/", s.publicRouter())
 	return outer
 }

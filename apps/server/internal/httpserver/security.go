@@ -417,6 +417,44 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// proxyAuthCSRFMiddleware guards the admin app when an upstream proxy
+// authenticates it (ZENNOTES_ADMIN_PROXY_AUTH). Browsers then attach the
+// proxy's credentials (basic auth, SSO cookies) ambiently, so any site could
+// submit a form or open the watch WebSocket. A state-changing request or a
+// WebSocket upgrade is refused when its Origin is present and neither
+// same-origin nor explicitly allowed (a "*" wildcard does not count), or when
+// the browser labels it Sec-Fetch-Site: cross-site. Requests without those
+// headers (CLI, desktop main process) pass. Token mode is unaffected.
+func (s *Server) proxyAuthCSRFMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.currentConfig().AdminProxyAuth && proxyAuthGuarded(r) && !s.proxyAuthOriginOK(r) {
+			http.Error(w, "cross-site request refused", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func proxyAuthGuarded(r *http.Request) bool {
+	switch r.Method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return strings.EqualFold(strings.TrimSpace(r.Header.Get("Upgrade")), "websocket")
+	default:
+		return true
+	}
+}
+
+func (s *Server) proxyAuthOriginOK(r *http.Request) bool {
+	if strings.EqualFold(strings.TrimSpace(r.Header.Get("Sec-Fetch-Site")), "cross-site") {
+		return false
+	}
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
+		return true
+	}
+	return s.originDecisionFor(r, origin).credentials
+}
+
 // logCORSRejection emits one log line per unique origin so a
 // misconfigured ZENNOTES_ALLOWED_ORIGINS surfaces in operator logs
 // instead of silently failing in the browser.
