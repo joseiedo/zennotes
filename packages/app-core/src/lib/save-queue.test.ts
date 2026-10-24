@@ -33,8 +33,7 @@ describe('createSaveQueue', () => {
     push(3)
     expect(sent).toEqual([1])
     gates[0].resolve(1)
-    await Promise.resolve()
-    await Promise.resolve()
+    await new Promise((r) => setTimeout(r, 0))
     expect(sent).toEqual([1, 3])
     gates[1].resolve(3)
     await done
