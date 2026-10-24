@@ -1,6 +1,18 @@
 import { createRoot } from 'react-dom/client'
+import '@renderer/styles/index.css'
+import './public.css'
+import { PublicApp } from './PublicApp'
 
-// Placeholder entry for the public reader; the real UI lands in a later task.
+// Excalidraw loads its hand-drawn fonts from here (copied into dist-public by
+// the excalidrawFonts plugin); unset, it would fall back to a CDN the CSP blocks.
+;(window as unknown as { EXCALIDRAW_ASSET_PATH?: string }).EXCALIDRAW_ASSET_PATH =
+  '/_zn/static/excalidraw-assets/'
+
+// Apply the theme before the first paint (PublicApp keeps it in sync).
+const dark = window.matchMedia?.('(prefers-color-scheme: dark)').matches === true
+document.documentElement.dataset.theme = dark ? 'dark-hard' : 'light-hard'
+document.documentElement.dataset.themeMode = dark ? 'dark' : 'light'
+
 const root = document.getElementById('zn-root')
 if (!root) throw new Error('#zn-root not found')
-createRoot(root).render(<div>ZenNotes</div>)
+createRoot(root).render(<PublicApp />)
