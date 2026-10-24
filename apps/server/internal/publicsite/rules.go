@@ -31,9 +31,28 @@ type rulesFile struct {
 type Store struct {
 	path string
 	mu   sync.Mutex
+	// pending holds hidden marks that a RewriteHidden could not persist, per
+	// vault root. Get overlays them so a failed rules write never makes a
+	// moved hidden item public; the next successful write persists them.
+	pending map[string]map[string]Mark
 }
 
 func NewStore(path string) *Store { return &Store{path: path} }
+
+// rulesLocked returns root's rules with pending hidden marks applied. The
+// caller holds s.mu.
+func (s *Store) rulesLocked(f rulesFile, root string) SiteRules {
+	r := f.Vaults[root]
+	rules := make(map[string]Mark, len(r.Rules)+len(s.pending[root]))
+	for k, m := range r.Rules {
+		rules[k] = m
+	}
+	for k, m := range s.pending[root] {
+		rules[k] = m
+	}
+	r.Rules = rules
+	return r
+}
 
 func (s *Store) load() rulesFile {
 	f := rulesFile{}
@@ -48,11 +67,7 @@ func (s *Store) load() rulesFile {
 func (s *Store) Get(vaultRoot string) SiteRules {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	r := s.load().Vaults[vaultRoot]
-	if r.Rules == nil {
-		r.Rules = map[string]Mark{}
-	}
-	return r
+	return s.rulesLocked(s.load(), vaultRoot)
 }
 
 func validKey(k string) bool {
@@ -83,11 +98,76 @@ func (s *Store) Put(vaultRoot string, r SiteRules) error {
 	defer s.mu.Unlock()
 	f := s.load()
 	f.Vaults[vaultRoot] = r
+	if err := s.saveLocked(f); err != nil {
+		return err
+	}
+	delete(s.pending, vaultRoot)
+	return nil
+}
+
+func (s *Store) saveLocked(f rulesFile) error {
 	data, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {
 		return err
 	}
 	return writeAtomic(s.path, data)
+}
+
+// RewriteHidden carries every hidden mark at oldPrefix or under it
+// (oldPrefix/...) to the same place under newPrefix, after a rename, move or
+// (with copy) duplicate. Public marks are never carried: a moved public item
+// becomes private. A hidden mark wins over any mark already at the
+// destination. When the rules file cannot be written the carried marks stay
+// in memory (Get reports them) and the error is returned, so the moved item
+// is still hidden while the process runs.
+func (s *Store) RewriteHidden(vaultRoot, oldPrefix, newPrefix string, copy bool) error {
+	if oldPrefix == newPrefix || !validKey(oldPrefix) || !validKey(newPrefix) {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	f := s.load()
+	r := s.rulesLocked(f, vaultRoot)
+	carried := map[string]Mark{}
+	for k, m := range r.Rules {
+		if m != MarkHidden {
+			continue
+		}
+		var rest string
+		switch {
+		case k == oldPrefix:
+		case strings.HasPrefix(k, oldPrefix+"/"):
+			rest = k[len(oldPrefix):]
+		default:
+			continue
+		}
+		carried[newPrefix+rest] = MarkHidden
+		if !copy {
+			delete(r.Rules, k)
+		}
+	}
+	if len(carried) == 0 {
+		return nil
+	}
+	for k, m := range carried {
+		r.Rules[k] = m
+	}
+	// Remember the carried marks before touching the disk.
+	if s.pending == nil {
+		s.pending = map[string]map[string]Mark{}
+	}
+	if s.pending[vaultRoot] == nil {
+		s.pending[vaultRoot] = map[string]Mark{}
+	}
+	for k, m := range carried {
+		s.pending[vaultRoot][k] = m
+	}
+	f.Vaults[vaultRoot] = r
+	if err := s.saveLocked(f); err != nil {
+		return err
+	}
+	delete(s.pending, vaultRoot)
+	return nil
 }
 
 func writeAtomic(path string, data []byte) error {

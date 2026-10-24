@@ -48,6 +48,9 @@ type Server struct {
 	loggedOrigins       sync.Map          // origin -> struct{}; dedupes CORS-rejection logs
 	publicRules         *publicsite.Store // nil unless cfg.PublicSite
 	publicStatic        fs.FS             // public site bundle (public.html + assets); nil → built-in shell
+	// publicGate pauses public reads while a rename/move/duplicate and its
+	// rules update run, so public requests never see a half-applied move.
+	publicGate sync.RWMutex
 }
 
 // SetPublicStatic sets the public site bundle served at /_zn/static/ and used
@@ -789,7 +792,9 @@ func (s *Server) renameNote(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	meta, err := s.currentVault().RenameNote(req.Path, req.Title)
+	meta, err := s.noteMove(false, req.Path, func(v *vault.Vault) (vault.NoteMeta, error) {
+		return v.RenameNote(req.Path, req.Title)
+	})
 	if err != nil {
 		writeError(w, err)
 		return
@@ -820,7 +825,9 @@ func (s *Server) trashNote(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	meta, err := s.currentVault().MoveToTrash(req.Path)
+	meta, err := s.noteMove(false, req.Path, func(v *vault.Vault) (vault.NoteMeta, error) {
+		return v.MoveToTrash(req.Path)
+	})
 	if err != nil {
 		writeError(w, err)
 		return
@@ -836,7 +843,9 @@ func (s *Server) restoreNote(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	meta, err := s.currentVault().RestoreFromTrash(req.Path)
+	meta, err := s.noteMove(false, req.Path, func(v *vault.Vault) (vault.NoteMeta, error) {
+		return v.RestoreFromTrash(req.Path)
+	})
 	if err != nil {
 		writeError(w, err)
 		return
@@ -860,7 +869,9 @@ func (s *Server) archiveNote(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	meta, err := s.currentVault().ArchiveNote(req.Path)
+	meta, err := s.noteMove(false, req.Path, func(v *vault.Vault) (vault.NoteMeta, error) {
+		return v.ArchiveNote(req.Path)
+	})
 	if err != nil {
 		writeError(w, err)
 		return
@@ -876,7 +887,9 @@ func (s *Server) unarchiveNote(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	meta, err := s.currentVault().UnarchiveNote(req.Path)
+	meta, err := s.noteMove(false, req.Path, func(v *vault.Vault) (vault.NoteMeta, error) {
+		return v.UnarchiveNote(req.Path)
+	})
 	if err != nil {
 		writeError(w, err)
 		return
@@ -892,7 +905,9 @@ func (s *Server) duplicateNote(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	meta, err := s.currentVault().DuplicateNote(req.Path)
+	meta, err := s.noteMove(true, req.Path, func(v *vault.Vault) (vault.NoteMeta, error) {
+		return v.DuplicateNote(req.Path)
+	})
 	if err != nil {
 		writeError(w, err)
 		return
@@ -910,7 +925,9 @@ func (s *Server) moveNote(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	meta, err := s.currentVault().MoveNote(req.Path, req.TargetFolder, req.TargetSubpath)
+	meta, err := s.noteMove(false, req.Path, func(v *vault.Vault) (vault.NoteMeta, error) {
+		return v.MoveNote(req.Path, req.TargetFolder, req.TargetSubpath)
+	})
 	if err != nil {
 		writeError(w, err)
 		return
@@ -946,7 +963,16 @@ func (s *Server) renameFolder(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	out, err := s.currentVault().RenameFolder(req.Folder, req.OldSubpath, req.NewSubpath)
+	var out string
+	err := s.publicMove(false, func(v *vault.Vault) (string, string, error) {
+		from := folderRel(v, req.Folder, req.OldSubpath)
+		var err error
+		out, err = v.RenameFolder(req.Folder, req.OldSubpath, req.NewSubpath)
+		if out == "" {
+			return from, "", err
+		}
+		return from, folderRel(v, req.Folder, out), err
+	})
 	if err != nil {
 		writeError(w, err)
 		return
@@ -979,7 +1005,16 @@ func (s *Server) duplicateFolder(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	out, err := s.currentVault().DuplicateFolder(req.Folder, req.Subpath)
+	var out string
+	err := s.publicMove(true, func(v *vault.Vault) (string, string, error) {
+		from := folderRel(v, req.Folder, req.Subpath)
+		var err error
+		out, err = v.DuplicateFolder(req.Folder, req.Subpath)
+		if out == "" {
+			return from, "", err
+		}
+		return from, folderRel(v, req.Folder, out), err
+	})
 	if err != nil {
 		writeError(w, err)
 		return
@@ -1109,7 +1144,9 @@ func (s *Server) renameAsset(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	meta, err := s.currentVault().RenameAsset(req.Path, req.Name)
+	meta, err := s.assetMove(false, req.Path, func(v *vault.Vault) (vault.AssetMeta, error) {
+		return v.RenameAsset(req.Path, req.Name)
+	})
 	if err != nil {
 		writeError(w, err)
 		return
@@ -1126,7 +1163,9 @@ func (s *Server) moveAsset(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	meta, err := s.currentVault().MoveAsset(req.Path, req.TargetDir)
+	meta, err := s.assetMove(false, req.Path, func(v *vault.Vault) (vault.AssetMeta, error) {
+		return v.MoveAsset(req.Path, req.TargetDir)
+	})
 	if err != nil {
 		writeError(w, err)
 		return
@@ -1142,7 +1181,9 @@ func (s *Server) duplicateAsset(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	meta, err := s.currentVault().DuplicateAsset(req.Path)
+	meta, err := s.assetMove(true, req.Path, func(v *vault.Vault) (vault.AssetMeta, error) {
+		return v.DuplicateAsset(req.Path)
+	})
 	if err != nil {
 		writeError(w, err)
 		return
@@ -1181,7 +1222,9 @@ func (s *Server) restoreDeletedAsset(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	meta, err := s.currentVault().RestoreDeletedAsset(req)
+	meta, err := s.assetMove(true, req.Path, func(v *vault.Vault) (vault.AssetMeta, error) {
+		return v.RestoreDeletedAsset(req)
+	})
 	if err != nil {
 		writeError(w, err)
 		return

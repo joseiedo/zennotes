@@ -254,7 +254,10 @@ export function PublicSiteSettings(): JSX.Element {
           <div className="text-sm font-medium text-ink-900">Public site</div>
           <div className="mt-1 text-xs leading-5 text-ink-500">
             Served read-only at the site root. Notes are private unless a folder
-            or note is marked Public; the nearest mark wins.
+            or note is marked Public; the nearest mark wins. Renaming or moving
+            in ZenNotes keeps Hidden items hidden, but a renamed Public item
+            becomes private. Renames made outside ZenNotes (Obsidian, sync, the
+            shell) can&apos;t be tracked: check the warnings below after them.
             {saving ? " Saving…" : ""}
           </div>
         </div>

@@ -1842,7 +1842,7 @@ func (v *Vault) RenameNote(rel, nextTitle string) (NoteMeta, error) {
 	notesBefore, _ := v.ListNotes()
 	meta, err := v.renameNoteFile(rel, nextTitle)
 	if err != nil {
-		return NoteMeta{}, err
+		return meta, err
 	}
 	if meta.Path != rel {
 		// ReadNote / WriteNote take their own locks, so this runs after the
@@ -1872,10 +1872,10 @@ func (v *Vault) renameNoteFile(rel, nextTitle string) (NoteMeta, error) {
 	folder, _ := v.folderOf(newAbs)
 	meta, err := v.readMeta(folder, newAbs)
 	if err != nil {
-		return NoteMeta{}, err
+		return v.movedNoteMeta(newAbs), err
 	}
 	if err := v.moveNoteCommentsLocked(rel, meta.Path); err != nil {
-		return NoteMeta{}, err
+		return meta, err
 	}
 	return meta, nil
 }
@@ -1921,6 +1921,35 @@ func (v *Vault) DeleteNote(rel string) error {
 	}
 	v.invalidateTextSearchCache()
 	return v.removeNoteCommentsLocked(rel)
+}
+
+// movedNoteMeta is the minimal meta returned with an error that happened
+// after a note was already moved or copied to abs: Path still says where it
+// went, so callers can keep state keyed by path (public-site rules) in sync.
+func (v *Vault) movedNoteMeta(abs string) NoteMeta {
+	rel, err := filepath.Rel(v.root, abs)
+	if err != nil {
+		return NoteMeta{}
+	}
+	return NoteMeta{Path: filepath.ToSlash(rel)}
+}
+
+// FolderVaultPath returns the vault-relative POSIX path of subpath inside the
+// top-level folder (honouring remapped system folders and a root-level inbox).
+func (v *Vault) FolderVaultPath(folder NoteFolder, subpath string) (string, error) {
+	base, err := v.folderRoot(folder)
+	if err != nil {
+		return "", err
+	}
+	abs, err := SafeJoin(base, subpath)
+	if err != nil {
+		return "", err
+	}
+	rel, err := filepath.Rel(v.root, abs)
+	if err != nil {
+		return "", err
+	}
+	return filepath.ToSlash(rel), nil
 }
 
 // --- Trash / Restore / Archive / Unarchive / Duplicate / Move ---
@@ -1991,10 +2020,10 @@ func (v *Vault) moveBetweenFolders(rel string, target NoteFolder) (NoteMeta, err
 	v.invalidateTextSearchCache()
 	meta, err := v.readMeta(target, newAbs)
 	if err != nil {
-		return NoteMeta{}, err
+		return v.movedNoteMeta(newAbs), err
 	}
 	if err := v.moveNoteCommentsLocked(rel, meta.Path); err != nil {
-		return NoteMeta{}, err
+		return meta, err
 	}
 	return meta, nil
 }
@@ -2031,10 +2060,10 @@ func (v *Vault) DuplicateNote(rel string) (NoteMeta, error) {
 	v.invalidateTextSearchCache()
 	meta, err := v.readMeta(folder, newAbs)
 	if err != nil {
-		return NoteMeta{}, err
+		return v.movedNoteMeta(newAbs), err
 	}
 	if err := v.copyNoteCommentsLocked(rel, meta.Path); err != nil {
-		return NoteMeta{}, err
+		return meta, err
 	}
 	return meta, nil
 }
@@ -2071,10 +2100,10 @@ func (v *Vault) MoveNote(rel string, target NoteFolder, targetSubpath string) (N
 	v.invalidateTextSearchCache()
 	meta, err := v.readMeta(target, newAbs)
 	if err != nil {
-		return NoteMeta{}, err
+		return v.movedNoteMeta(newAbs), err
 	}
 	if err := v.moveNoteCommentsLocked(rel, meta.Path); err != nil {
-		return NoteMeta{}, err
+		return meta, err
 	}
 	return meta, nil
 }
@@ -2120,9 +2149,12 @@ func (v *Vault) RenameFolder(folder NoteFolder, oldSub, newSub string) (string, 
 		return "", err
 	}
 	v.invalidateTextSearchCache()
+	rel, _ := filepath.Rel(base, newAbs)
+	relPath := filepath.ToSlash(rel)
+	// From here on the folder has moved: errors still report where it went.
 	settings, err := v.GetSettings()
 	if err != nil {
-		return "", err
+		return relPath, err
 	}
 	_, err = v.SetSettings(VaultSettings{
 		PrimaryNotesLocation: settings.PrimaryNotesLocation,
@@ -2136,10 +2168,9 @@ func (v *Vault) RenameFolder(folder NoteFolder, oldSub, newSub string) (string, 
 		Favorites: settings.Favorites,
 	})
 	if err != nil {
-		return "", err
+		return relPath, err
 	}
-	rel, _ := filepath.Rel(base, newAbs)
-	return filepath.ToSlash(rel), nil
+	return relPath, nil
 }
 
 func (v *Vault) DeleteFolder(folder NoteFolder, subpath string) error {
@@ -2196,12 +2227,13 @@ func (v *Vault) DuplicateFolder(folder NoteFolder, subpath string) (string, erro
 		return "", err
 	}
 	v.invalidateTextSearchCache()
-	settings, err := v.GetSettings()
-	if err != nil {
-		return "", err
-	}
 	rel, _ := filepath.Rel(base, dst)
 	relPath := filepath.ToSlash(rel)
+	// From here on the copy exists: errors still report where it is.
+	settings, err := v.GetSettings()
+	if err != nil {
+		return relPath, err
+	}
 	_, err = v.SetSettings(VaultSettings{
 		PrimaryNotesLocation: settings.PrimaryNotesLocation,
 		DailyNotes:           settings.DailyNotes,
@@ -2213,7 +2245,7 @@ func (v *Vault) DuplicateFolder(folder NoteFolder, subpath string) (string, erro
 		Favorites: settings.Favorites,
 	})
 	if err != nil {
-		return "", err
+		return relPath, err
 	}
 	return relPath, nil
 }
@@ -2706,13 +2738,14 @@ func (v *Vault) cleanAssetTargetDir(targetDir string) (string, error) {
 }
 
 func (v *Vault) assetMetaForAbs(abs string) (AssetMeta, error) {
-	info, err := os.Stat(abs)
-	if err != nil {
-		return AssetMeta{}, err
-	}
 	rel, err := filepath.Rel(v.root, abs)
 	if err != nil {
 		return AssetMeta{}, err
+	}
+	info, err := os.Stat(abs)
+	if err != nil {
+		// The caller may just have moved the file here: say where it is.
+		return AssetMeta{Path: filepath.ToSlash(rel)}, err
 	}
 	name := filepath.Base(abs)
 	return AssetMeta{

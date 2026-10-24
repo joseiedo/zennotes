@@ -1,6 +1,7 @@
 package httpserver
 
 import (
+	"bytes"
 	"encoding/json"
 	"encoding/xml"
 	"io/fs"
@@ -64,12 +65,55 @@ func (s *Server) publicRouter() http.Handler {
 	return r
 }
 
+// bufferedResponse collects a public response in memory so it can be built
+// under publicGate and written to the (possibly slow) client after releasing it.
+type bufferedResponse struct {
+	header http.Header
+	code   int
+	body   bytes.Buffer
+}
+
+func (b *bufferedResponse) Header() http.Header { return b.header }
+func (b *bufferedResponse) Write(p []byte) (int, error) {
+	if b.code == 0 {
+		b.code = http.StatusOK
+	}
+	return b.body.Write(p)
+}
+func (b *bufferedResponse) WriteHeader(code int) {
+	if b.code == 0 {
+		b.code = code
+	}
+}
+
 func (s *Server) publicDispatch(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		w.Header().Set("Allow", "GET, HEAD")
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
+	// Assets stream from an open file: they take the gate themselves only
+	// while deciding visibility and opening the file.
+	if r.URL.Path == publicAPIPrefix+"asset" {
+		s.publicAssetAPI(w, r)
+		return
+	}
+	// Everything else is small and built in memory under the read side of
+	// publicGate, so a concurrent rename/move can never be observed half-done.
+	buf := &bufferedResponse{header: w.Header()}
+	s.publicGate.RLock()
+	s.publicRoute(buf, r)
+	s.publicGate.RUnlock()
+	if buf.code == 0 {
+		buf.code = http.StatusOK
+	}
+	w.WriteHeader(buf.code)
+	if r.Method != http.MethodHead {
+		_, _ = w.Write(buf.body.Bytes())
+	}
+}
+
+func (s *Server) publicRoute(w http.ResponseWriter, r *http.Request) {
 	p := r.URL.Path
 	switch {
 	case p == "/sitemap.xml":
@@ -280,18 +324,43 @@ func isTrashPath(rel string, systemPaths map[string]string) bool {
 }
 
 func (s *Server) publicAssetAPI(w http.ResponseWriter, r *http.Request) {
+	f, info, resolved, ok := s.openPublicAsset(r)
+	if !ok {
+		s.publicNotFoundAPI(w)
+		return
+	}
+	defer f.Close()
+	ext := strings.ToLower(path.Ext(resolved))
+	h := w.Header()
+	// Assets share the origin with /admin: never let one run as a document.
+	h.Set("Content-Security-Policy", "sandbox")
+	ctype := ""
+	if publicInlineAssetExts[ext] {
+		ctype = mime.TypeByExtension(ext)
+	}
+	if ctype == "" {
+		ctype = "application/octet-stream"
+		h.Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": path.Base(resolved)}))
+	}
+	h.Set("Content-Type", ctype)
+	http.ServeContent(w, r, "", info.ModTime(), f)
+}
+
+// openPublicAsset decides whether the requested asset is public and opens it,
+// all under the read side of publicGate. The caller closes the file.
+func (s *Server) openPublicAsset(r *http.Request) (*os.File, os.FileInfo, string, bool) {
+	s.publicGate.RLock()
+	defer s.publicGate.RUnlock()
 	q := r.URL.Query()
 	href := q.Get("href")
 	idx := s.loadPublicIndex()
 	meta, ok := idx.page(q.Get("note"))
 	if !ok || href == "" {
-		s.publicNotFoundAPI(w)
-		return
+		return nil, nil, "", false
 	}
 	body, ok := idx.readBody(meta)
 	if !ok {
-		s.publicNotFoundAPI(w)
-		return
+		return nil, nil, "", false
 	}
 	listed := false
 	for _, ref := range publicsite.ExtractAssetRefs(publicsite.SanitizeBody(body)) {
@@ -301,24 +370,20 @@ func (s *Server) publicAssetAPI(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if !listed {
-		s.publicNotFoundAPI(w)
-		return
+		return nil, nil, "", false
 	}
 
 	v := idx.v
 	if v == nil {
-		s.publicNotFoundAPI(w)
-		return
+		return nil, nil, "", false
 	}
 	settings, err := v.GetSettings()
 	if err != nil {
-		s.publicNotFoundAPI(w)
-		return
+		return nil, nil, "", false
 	}
 	assets, err := v.ListAssets()
 	if err != nil {
-		s.publicNotFoundAPI(w)
-		return
+		return nil, nil, "", false
 	}
 	candidates := make([]string, 0, len(assets))
 	for _, a := range assets {
@@ -336,39 +401,22 @@ func (s *Server) publicAssetAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	resolved, ok := publicsite.ResolveAssetRef(meta.Path, href, candidates)
 	if !ok || isTrashPath(resolved, settings.SystemFolderPaths) {
-		s.publicNotFoundAPI(w)
-		return
+		return nil, nil, "", false
 	}
 	abs, err := v.AssetAbsPath(resolved)
 	if err != nil {
-		s.publicNotFoundAPI(w)
-		return
+		return nil, nil, "", false
 	}
 	f, err := os.Open(abs)
 	if err != nil {
-		s.publicNotFoundAPI(w)
-		return
+		return nil, nil, "", false
 	}
-	defer f.Close()
 	info, err := f.Stat()
 	if err != nil || !info.Mode().IsRegular() {
-		s.publicNotFoundAPI(w)
-		return
+		_ = f.Close()
+		return nil, nil, "", false
 	}
-	ext := strings.ToLower(path.Ext(resolved))
-	h := w.Header()
-	// Assets share the origin with /admin: never let one run as a document.
-	h.Set("Content-Security-Policy", "sandbox")
-	ctype := ""
-	if publicInlineAssetExts[ext] {
-		ctype = mime.TypeByExtension(ext)
-	}
-	if ctype == "" {
-		ctype = "application/octet-stream"
-		h.Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": path.Base(resolved)}))
-	}
-	h.Set("Content-Type", ctype)
-	http.ServeContent(w, r, "", info.ModTime(), f)
+	return f, info, resolved, true
 }
 
 // publicInlineAssetExts are the asset types served inline (media and PDF).
