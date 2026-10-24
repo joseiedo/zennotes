@@ -24,11 +24,11 @@ func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
 	cfg := config.Load()
-	if err := config.ValidatePublicSite(cfg); err != nil {
+	if err := startupAuthError(cfg); err != nil {
 		log.Fatal(err)
 	}
-	if strings.TrimSpace(cfg.AuthToken) == "" && !cfg.AllowInsecureNoAuth && !bindIsLoopback(cfg.Bind) {
-		log.Fatal("refusing to start without an auth token on a non-loopback bind; set ZENNOTES_AUTH_TOKEN, point ZENNOTES_AUTH_TOKEN_FILE at a readable token file, or set ZENNOTES_ALLOW_INSECURE_NOAUTH=1 to override")
+	if cfg.PublicSite && strings.TrimSpace(cfg.AuthToken) == "" && cfg.AdminProxyAuth {
+		log.Printf("WARNING: public site is on with no auth token; %s relies entirely on upstream (reverse proxy) authentication", cfg.BasePath)
 	}
 	logStartupBanner(cfg)
 
@@ -170,4 +170,18 @@ func bindIsLoopback(bind string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// startupAuthError decides whether the server may start given its auth setup.
+func startupAuthError(cfg config.Config) error {
+	if err := config.ValidatePublicSite(cfg); err != nil {
+		return err
+	}
+	if strings.TrimSpace(cfg.AuthToken) != "" || cfg.AllowInsecureNoAuth || bindIsLoopback(cfg.Bind) {
+		return nil
+	}
+	if cfg.PublicSite && cfg.AdminProxyAuth {
+		return nil
+	}
+	return errors.New("refusing to start without an auth token on a non-loopback bind; set ZENNOTES_AUTH_TOKEN, point ZENNOTES_AUTH_TOKEN_FILE at a readable token file, or set ZENNOTES_ALLOW_INSECURE_NOAUTH=1 to override")
 }

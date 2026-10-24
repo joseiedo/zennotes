@@ -1,8 +1,8 @@
 package config
 
 import (
-	"errors"
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"log"
 	"net"
@@ -53,15 +53,15 @@ type Config struct {
 	AdminProxyAuth bool `json:"-"`
 
 	// Limits and security knobs.
-	MaxAssetBytes  int64       `json:"-"`
-	MaxNoteBytes   int64       `json:"-"`
-	BehindTLS      bool        `json:"-"`
+	MaxAssetBytes int64 `json:"-"`
+	MaxNoteBytes  int64 `json:"-"`
+	BehindTLS     bool  `json:"-"`
 	// PersistSessions saves browser sessions to <data>/sessions.json so they
 	// survive a server restart. Opt-in via ZENNOTES_PERSIST_SESSIONS.
 	PersistSessions bool        `json:"-"`
 	TrustedProxies  []net.IPNet `json:"-"`
-	VaultFileMode  fs.FileMode `json:"-"`
-	VaultDirMode   fs.FileMode `json:"-"`
+	VaultFileMode   fs.FileMode `json:"-"`
+	VaultDirMode    fs.FileMode `json:"-"`
 }
 
 func configFilePath() string {
