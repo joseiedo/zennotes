@@ -708,3 +708,15 @@ func TestPublicSearchFindsPublicHitBehindManyPrivateMatches(t *testing.T) {
 		t.Fatalf("search: %d %s", r.Status, r.Body)
 	}
 }
+
+// M2: the bare base path redirects to the admin app's directory URL.
+func TestPublicSiteBareBasePathRedirects(t *testing.T) {
+	f := newPublicFixture(t, map[string]string{"Blog/a.md": "x\n"}, map[string]publicsite.Mark{"Blog": publicsite.MarkPublic}, "")
+	r := fetchRaw(t, f.srv, "/admin?x=1")
+	if r.Status != http.StatusMovedPermanently || r.Header.Get("Location") != "/admin/?x=1" {
+		t.Fatalf("/admin: %d Location=%q", r.Status, r.Header.Get("Location"))
+	}
+	if r := fetchRaw(t, f.srv, "/admin/"); r.Status != http.StatusOK {
+		t.Fatalf("/admin/: %d", r.Status)
+	}
+}

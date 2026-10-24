@@ -213,7 +213,20 @@ func (s *Server) publicSiteRouter(inner http.Handler) http.Handler {
 	outer := chi.NewRouter()
 	outer.Use(middleware.RequestID)
 	outer.Use(middleware.Recoverer)
-	outer.Mount(basePath, s.securityHeadersMiddleware(s.corsMiddleware(s.proxyAuthCSRFMiddleware(inner))))
+	admin := s.securityHeadersMiddleware(s.corsMiddleware(s.proxyAuthCSRFMiddleware(inner)))
+	outer.Mount(basePath, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The bare base path would serve the SPA shell with every relative
+		// asset URL off by one directory: send it to basePath + "/".
+		if r.URL.Path == basePath && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
+			target := basePath + "/"
+			if r.URL.RawQuery != "" {
+				target += "?" + r.URL.RawQuery
+			}
+			http.Redirect(w, r, target, http.StatusMovedPermanently)
+			return
+		}
+		admin.ServeHTTP(w, r)
+	}))
 	outer.Mount("/", s.publicRouter())
 	return outer
 }
