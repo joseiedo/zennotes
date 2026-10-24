@@ -109,3 +109,39 @@ func TestResolveAssetRef(t *testing.T) {
 		}
 	}
 }
+
+func TestExtractAssetRefsNormalizesBeforeClassifying(t *testing.T) {
+	for _, body := range []string{
+		"[x](draw%2Eexcalidraw)", "![](draw%2Eexcalidraw)", "[x](draw.excalidraw/)",
+		"[x](./draw.excalidraw)", "[x](note%2Emd)", "[x](o%2Eexcalidraw%2Emd)", "<img src=\"d%2Eexcalidraw\">",
+	} {
+		if got := ExtractAssetRefs(body); len(got) != 0 {
+			t.Errorf("%q -> %v", body, got)
+		}
+	}
+	if got := ExtractAssetRefs("![[draw%2Eexcalidraw]]"); len(got) != 1 {
+		t.Errorf("embed should count: %v", got)
+	}
+}
+
+func TestSanitizeCommonMarkCodeStrictness(t *testing.T) {
+	for _, in := range []string{
+		"para\n\n    ```\n%% secret %%\n```\n",
+		"para\n\n\t```\n%% secret %%\n```\n",
+		"a \\` %%secret%% ` b",
+	} {
+		if out := SanitizeBody(in); strings.Contains(out, "secret") {
+			t.Errorf("leaked in %q -> %q", in, out)
+		}
+	}
+	if out := SanitizeBody("   ```\n%%keep%%\n   ```\n"); !strings.Contains(out, "%%keep%%") {
+		t.Errorf("3-space fence should be code: %q", out)
+	}
+}
+
+func TestSanitizeFrontmatterOnlyDashCloser(t *testing.T) {
+	out := SanitizeBody("---\na: 1\n...\nsecret: y\n---\nbody")
+	if strings.Contains(out, "secret") || !strings.Contains(out, "body") {
+		t.Errorf("got %q", out)
+	}
+}

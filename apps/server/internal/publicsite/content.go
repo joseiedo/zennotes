@@ -37,7 +37,7 @@ func splitFrontmatter(body string) (fm, rest string, found bool) {
 			next = pos + end + 1
 		}
 		t := strings.TrimRight(line, " \t\r")
-		if t == "---" || t == "..." {
+		if t == "---" {
 			return s[nl+1 : pos], s[next:], true
 		}
 		if end < 0 {
@@ -67,7 +67,16 @@ func codeSpans(s string) []span {
 		}
 		trimmed := strings.TrimLeft(line, " \t")
 		run := 0
-		if len(trimmed) > 0 && (trimmed[0] == '`' || trimmed[0] == '~') {
+		// A fence line is indented at most 3 spaces; a tab counts as 4.
+		indent := 0
+		for _, c := range line[:len(line)-len(trimmed)] {
+			if c == '\t' {
+				indent += 4
+			} else {
+				indent++
+			}
+		}
+		if indent <= 3 && len(trimmed) > 0 && (trimmed[0] == '`' || trimmed[0] == '~') {
 			for run < len(trimmed) && trimmed[run] == trimmed[0] {
 				run++
 			}
@@ -96,6 +105,14 @@ func inlineSpans(line string, base int) []span {
 	var out []span
 	for i := 0; i < len(line); {
 		if line[i] != '`' {
+			i++
+			continue
+		}
+		bs := 0
+		for k := i - 1; k >= 0 && line[k] == '\\'; k-- {
+			bs++
+		}
+		if bs%2 == 1 { // escaped backtick cannot open a span
 			i++
 			continue
 		}
@@ -257,8 +274,10 @@ func ExtractAssetRefs(sanitized string) []string {
 		if notLocalHref(h) {
 			return
 		}
-		clean := stripQueryAndHash(h)
-		if clean == "" {
+		// Classify on the decoded, normalized path, exactly as
+		// ResolveAssetRef will resolve it (%2E, trailing slash, ./ ...).
+		clean := posixNormalize(decodeHrefPath(h))
+		if clean == "" || escapesVault(clean) {
 			return
 		}
 		if isExcalidrawName(clean) {
