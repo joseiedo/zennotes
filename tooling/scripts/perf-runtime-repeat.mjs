@@ -6,22 +6,16 @@ import { join } from 'node:path'
 
 const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm'
 const runs = parsePositiveInt(process.env.ZEN_PERF_RUNS, 3)
-const target = process.env.ZEN_PERF_REPEAT_TARGET ?? 'both'
+const target = process.env.ZEN_PERF_REPEAT_TARGET ?? 'web'
 const warmCacheRepeat = process.env.ZEN_PERF_REPEAT_WARM_CACHE === '1'
 const enforceRepeatBudgets =
   process.env.ZEN_PERF_REPEAT_ENFORCE === '1' || process.env.ZEN_PERF_ENFORCE === '1'
 
-const targets =
-  target === 'web'
-    ? ['web']
-    : target === 'desktop'
-      ? ['desktop']
-      : target === 'both'
-        ? ['web', 'desktop']
-        : []
+// The desktop target went away with apps/desktop; only the web runtime remains.
+const targets = target === 'web' ? ['web'] : []
 
 if (targets.length === 0) {
-  console.error('ZEN_PERF_REPEAT_TARGET must be web, desktop, or both')
+  console.error('ZEN_PERF_REPEAT_TARGET must be web')
   process.exit(1)
 }
 
