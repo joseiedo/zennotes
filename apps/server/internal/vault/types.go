@@ -6,7 +6,7 @@ import (
 )
 
 // Types in this file mirror the TypeScript interfaces in
-// `src/shared/ipc.ts` and `src/shared/tasks.ts`. The JSON tags must
+// `packages/shared-domain/src/ipc.ts` and `packages/shared-domain/src/tasks.ts`. The JSON tags must
 // match the TS field names exactly so the client can consume the
 // responses without translation.
 
