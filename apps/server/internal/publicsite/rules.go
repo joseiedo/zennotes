@@ -155,20 +155,43 @@ func (s *Store) RewriteHidden(vaultRoot, oldPrefix, newPrefix string, copy bool)
 	if !wasPublic && NewPolicy(SiteRules{Rules: r.Rules}).IsPublic(newPrefix) {
 		carried[newPrefix] = MarkHidden
 	}
-	if len(carried) == 0 {
+	return s.commitLocked(f, vaultRoot, r, carried)
+}
+
+// HidePaths adds a hidden mark at every path that is valid and not already
+// hidden by its own mark, e.g. notes a workflow run moved into a public
+// folder. Like RewriteHidden, the marks stay in memory if the rules file
+// cannot be written.
+func (s *Store) HidePaths(vaultRoot string, paths []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	f := s.load()
+	r := s.rulesLocked(f, vaultRoot)
+	added := map[string]Mark{}
+	for _, p := range paths {
+		if validKey(p) && r.Rules[p] != MarkHidden {
+			added[p] = MarkHidden
+		}
+	}
+	return s.commitLocked(f, vaultRoot, r, added)
+}
+
+// commitLocked applies added to r and persists it. The marks are remembered in
+// memory before touching the disk, so a failed write still keeps them.
+func (s *Store) commitLocked(f rulesFile, vaultRoot string, r SiteRules, added map[string]Mark) error {
+	if len(added) == 0 {
 		return nil
 	}
-	for k, m := range carried {
+	for k, m := range added {
 		r.Rules[k] = m
 	}
-	// Remember the carried marks before touching the disk.
 	if s.pending == nil {
 		s.pending = map[string]map[string]Mark{}
 	}
 	if s.pending[vaultRoot] == nil {
 		s.pending[vaultRoot] = map[string]Mark{}
 	}
-	for k, m := range carried {
+	for k, m := range added {
 		s.pending[vaultRoot][k] = m
 	}
 	f.Vaults[vaultRoot] = r

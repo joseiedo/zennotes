@@ -280,3 +280,54 @@ func TestRenameRulesWriteFailureFailsClosed(t *testing.T) {
 	}
 	assertNotePrivate(t, f, "Blog/Later/d.md")
 }
+
+// applyWorkflowChanges posts a prepared workflow run made of raw file changes,
+// the shape the web client sends (a move is a delete plus a create).
+func applyWorkflowChanges(t *testing.T, f *publicFixture, changes []map[string]any) {
+	t.Helper()
+	adminPost(t, f, "/workflows/apply", map[string]any{
+		"workflowId":   "wf",
+		"ops":          []any{map[string]any{"kind": "move", "path": "x.md", "to": "y"}},
+		"applied":      1,
+		"irreversible": 0,
+		"changes":      changes,
+	}, nil)
+}
+
+func workflowMove(from, to, body string) []map[string]any {
+	return []map[string]any{
+		{"path": from, "before": body, "after": nil},
+		{"path": to, "before": nil, "after": body},
+	}
+}
+
+func TestWorkflowMoveKeepsNonPublicNotesPrivate(t *testing.T) {
+	cases := []struct{ name, from, to, body string }{
+		{"hidden note renamed inside a public folder", "Blog/secret.md", "Blog/renamed.md", "SECRET-NOTE body\n"},
+		{"note hidden by its folder, archived into a public archive", "Blog/Drafts/d.md", "archive/Blog/Drafts/d.md", "SECRET-DRAFT body\n"},
+		{"unmarked private note moved into a public folder", "Private/p.md", "Blog/p.md", "SECRET-PRIVATE body\n"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := newPublicFixture(t, renameFixtureFiles(), renameFixtureRules(), "Blog/index.md")
+			applyWorkflowChanges(t, f, workflowMove(c.from, c.to, c.body))
+			if _, err := os.Stat(filepath.Join(f.root, filepath.FromSlash(c.to))); err != nil {
+				t.Fatalf("workflow did not create %s: %v", c.to, err)
+			}
+			assertNotePrivate(t, f, c.to)
+			if r := fetchRaw(t, f.srv, "/Blog/index"); r.Status != http.StatusOK {
+				t.Errorf("public index: %d", r.Status)
+			}
+		})
+	}
+}
+
+// A workflow that only creates a note in a public folder publishes it, just
+// like creating the note by hand.
+func TestWorkflowCreateInPublicFolderStaysPublic(t *testing.T) {
+	f := newPublicFixture(t, renameFixtureFiles(), renameFixtureRules(), "Blog/index.md")
+	applyWorkflowChanges(t, f, []map[string]any{{"path": "Blog/new.md", "before": nil, "after": "# New\n"}})
+	if r := fetchRaw(t, f.srv, "/Blog/new"); r.Status != http.StatusOK {
+		t.Fatalf("new public note: %d", r.Status)
+	}
+}

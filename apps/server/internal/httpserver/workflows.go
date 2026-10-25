@@ -1,9 +1,11 @@
 package httpserver
 
 import (
+	"log"
 	"net/http"
 	"strings"
 
+	"github.com/ZenNotes/zennotes/apps/server/internal/publicsite"
 	"github.com/ZenNotes/zennotes/apps/server/internal/vault"
 )
 
@@ -71,12 +73,49 @@ func (s *Server) applyWorkflow(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	receipt, err := s.currentVault().ApplyPreparedWorkflow(input)
+	receipt, err := s.applyWorkflowRun(input)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, receipt)
+}
+
+// applyWorkflowRun applies a prepared run. With the public site on it keeps
+// the run from publishing anything: the client sends moves as plain file
+// changes (delete the old path, create the new one), so when a run removes a
+// note that was not public, every note it creates at a public path is hidden.
+// A run that only creates notes publishes them like creating them by hand.
+// publicGate is held across the apply and the rules update, as for in-app
+// moves (see public_moves.go).
+func (s *Server) applyWorkflowRun(input vault.PreparedWorkflowRun) (vault.WorkflowRunReceipt, error) {
+	v := s.currentVault()
+	if s.publicRules == nil {
+		return v.ApplyPreparedWorkflow(input)
+	}
+	s.publicGate.Lock()
+	defer s.publicGate.Unlock()
+	policy := publicsite.NewPolicy(s.publicRules.Get(v.Root()))
+	removedPrivate := false
+	var created []string
+	for _, change := range input.Changes {
+		rel := vaultRel(change.Path)
+		switch {
+		case change.Before != nil && change.After == nil && !policy.IsPublic(rel):
+			removedPrivate = true
+		case change.Before == nil && change.After != nil && policy.IsPublic(rel):
+			created = append(created, rel)
+		}
+	}
+	receipt, err := v.ApplyPreparedWorkflow(input)
+	if err != nil || !removedPrivate || len(created) == 0 {
+		return receipt, err
+	}
+	if rerr := s.publicRules.HidePaths(v.Root(), created); rerr != nil {
+		log.Printf("public site: could not persist hidden marks for notes moved by a workflow (kept in memory until restart): %v", rerr)
+		return receipt, httpStatusError{code: http.StatusInternalServerError, msg: "workflow applied, but the public site rules could not be saved; the moved notes stay hidden until restart — check the server log"}
+	}
+	return receipt, nil
 }
 
 func (s *Server) undoWorkflowRun(w http.ResponseWriter, r *http.Request) {

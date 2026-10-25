@@ -150,3 +150,22 @@ func TestRewriteHiddenPrivateDestinationNeedsNoMark(t *testing.T) {
 		t.Fatalf("unneeded mark added: %+v", s.Get("/v").Rules)
 	}
 }
+
+func TestHidePathsWriteFailureFailsClosed(t *testing.T) {
+	s := newRewriteStore(t, map[string]Mark{"Blog": MarkPublic})
+	dir := filepath.Dir(s.path)
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	if err := s.HidePaths("/v", []string{"Blog/moved.md", "../bad"}); err == nil {
+		t.Fatal("expected write error")
+	}
+	p := NewPolicy(s.Get("/v"))
+	if p.IsPublic("Blog/moved.md") {
+		t.Fatalf("hidden path exposed after failed rules write: %+v", s.Get("/v").Rules)
+	}
+	if _, ok := s.Get("/v").Rules["../bad"]; ok {
+		t.Fatal("invalid key stored")
+	}
+}
