@@ -5,7 +5,6 @@
   "type": "module",
   "exports": {
     "./bridge": "./src/bridge.ts",
-    "./cloud-sync": "./src/cloud-sync.ts",
     "./ipc": "./src/ipc.ts",
     "./templates": "./src/templates.ts",
     "./workflows": "./src/workflows.ts"

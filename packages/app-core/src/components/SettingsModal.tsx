@@ -130,8 +130,6 @@ import { RemoteWorkspaceProfileModal } from "./RemoteWorkspaceProfileModal";
 import { Button } from "./ui/Button";
 import { CustomCodeLanguagesSettings } from "./CustomCodeLanguagesSettings";
 import { TextReplacementsSettings } from "./TextReplacementsSettings";
-import { CloudSettings } from "./CloudSettings";
-import { consumeSettingsTarget } from "../lib/settings-navigation";
 
 type SettingsCategoryId =
   | "appearance"
@@ -140,7 +138,6 @@ type SettingsCategoryId =
   | "tasks"
   | "typography"
   | "vault"
-  | "cloud"
   | "templates"
   | "mcp"
   | "cli"
@@ -231,12 +228,6 @@ const SETTINGS_CATEGORY_ICONS: Record<SettingsCategoryId, JSX.Element> = {
       <path d="M3 7l9 4 9-4M12 11v10" />
     </NavIcon>
   ),
-  cloud: (
-    <NavIcon>
-      <path d="M6 18h11a4 4 0 0 0 .7-7.94A6 6 0 0 0 6.3 8.4 4.8 4.8 0 0 0 6 18Z" />
-      <path d="m9.5 14 2.5-2.5 2.5 2.5M12 11.5V18" />
-    </NavIcon>
-  ),
   templates: (
     <NavIcon>
       <rect x="4" y="4" width="16" height="16" rx="2" />
@@ -278,7 +269,7 @@ const SETTINGS_SECTIONS: {
     title: "Editing",
     categoryIds: ["editor", "tasks", "keymaps"],
   },
-  { id: "vault", title: "Vault", categoryIds: ["vault", "cloud", "templates"] },
+  { id: "vault", title: "Vault", categoryIds: ["vault", "templates"] },
   { id: "system", title: "System", categoryIds: ["mcp", "cli", "about"] },
 ];
 
@@ -435,7 +426,6 @@ export function SettingsModal(): JSX.Element {
   const supportsRemoteWorkspace =
     appInfo.runtime === "desktop" &&
     zenBridge.getCapabilities().supportsRemoteWorkspace;
-  const supportsCloudSync = !!zenBridge.getCapabilities().supportsCloudSync;
   const supportsPublicSite =
     zenBridge.getCapabilities().supportsPublicSite === true;
   const setSettingsOpen = useStore((s) => s.setSettingsOpen);
@@ -1167,9 +1157,7 @@ export function SettingsModal(): JSX.Element {
 
   const ref = useRef<HTMLDivElement | null>(null);
   const settingsSearchHighlightTimerRef = useRef<number | null>(null);
-  const [activeCategory, setActiveCategory] = useState<SettingsCategoryId>(
-    () => consumeSettingsTarget() ?? "appearance",
-  );
+  const [activeCategory, setActiveCategory] = useState<SettingsCategoryId>("appearance");
   // Per-category active sub-tab (dense categories split their content into sub-tabs).
   const [activeSubTabByCategory, setActiveSubTabByCategory] = useState<
     Partial<Record<SettingsCategoryId, string>>
@@ -3118,58 +3106,6 @@ export function SettingsModal(): JSX.Element {
         </div>
       ),
     },
-    ...(supportsCloudSync
-      ? [
-          {
-            id: "cloud" as const,
-            title: "Cloud",
-            description:
-              "Connect your account, review plan access, and sync this vault.",
-            keywords: [
-              "cloud",
-              "account",
-              "sync",
-              "backup",
-              "publish",
-              "subscription",
-            ],
-            searchItems: [
-              {
-                id: "cloud-account",
-                title: "ZenNotes Cloud account",
-                description:
-                  "Connect or disconnect this app from ZenNotes Cloud.",
-                keywords: ["login", "sign in", "account", "device"],
-              },
-              {
-                id: "cloud-plan",
-                title: "Cloud plan access",
-                description:
-                  "See whether sync, backup, and publishing are included.",
-                keywords: ["subscription", "entitlement", "features"],
-              },
-              {
-                id: "cloud-vault",
-                title: "Cloud vault link",
-                description: "Link this local vault and run a manual sync.",
-                keywords: ["sync", "link", "create", "conflict"],
-              },
-            ],
-            content: (
-              <div {...settingsSearchTargetProps("cloud-account")}>
-                <CloudSettings
-                  localVaultAvailable={
-                    workspaceMode === "local" &&
-                    !!vault &&
-                    vault.temporary !== true
-                  }
-                  localVaultName={vault?.name ?? "My notes"}
-                />
-              </div>
-            ),
-          },
-        ]
-      : []),
     {
       id: "vault",
       title: "Vault",

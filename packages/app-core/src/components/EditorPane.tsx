@@ -144,7 +144,6 @@ import { selectTypstPreambleFor } from '../lib/typst-preamble-select'
 import { CommentsPanel, type CommentDraft } from './CommentsPanel'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
 import { promptApp } from '../lib/prompt-requests'
-import { PublishedNoteButton } from './PublishedNoteButton'
 import { TasksView } from './TasksView'
 import { DatabaseView } from './DatabaseView'
 import { LazyExcalidrawView } from './LazyExcalidrawView'
@@ -895,7 +894,6 @@ export function EditorPane({ pane }: { pane: PaneLeaf }): JSX.Element {
   const folderLabels = resolveSystemFolderLabels(systemFolderLabels)
   const vaultSettings = useStore((s) => s.vaultSettings)
   const autoCalendarPanel = useStore((s) => s.autoCalendarPanel)
-  const supportsCloudPublishing = window.zen.getCapabilities().supportsCloudSync === true
   // Tag-driven Typst definitions for this pane's note (#486); '' unless the
   // setting is on, Typst is the renderer, and the note's tags match a preamble.
   const typstPreamble = useStore((s) => selectTypstPreambleFor(s, content?.path ?? null))
@@ -3751,9 +3749,6 @@ export function EditorPane({ pane }: { pane: PaneLeaf }): JSX.Element {
                 if (next && next !== content.title) void renameActive(next)
               }}
             />
-            {supportsCloudPublishing && content.folder !== 'trash' && (
-              <PublishedNoteButton key={content.path} note={content} />
-            )}
             {isDirty && (
               <span
                 aria-label="Unsaved changes"

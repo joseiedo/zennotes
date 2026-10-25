@@ -46,7 +46,6 @@ import {
   DocumentIcon,
   ExcalidrawIcon,
   ExpandAllIcon,
-  LinkIcon,
   PaperclipIcon,
   FolderPlusIcon,
   NotePlusIcon,
@@ -130,48 +129,10 @@ import {
 import { buildVaultSwitcherEntries } from "../lib/vault-switcher";
 import { appUpdateBadgeLabel, useAppUpdateState } from "../lib/app-update-state";
 import { getISOWeekYear } from "../lib/template-render";
-import { requestPublishNote } from "../lib/publish-note-requests";
-import {
-  isCloudAccountConnectedPhase,
-  useCloudSyncStatusStore,
-} from "../lib/cloud-auto-sync";
-import {
-  notifyPublishedNoteChanged,
-  subscribePublishedNoteChanges,
-} from "../lib/published-note-events";
-import { useToastStore } from "../lib/toast";
 
 const ACTIVE_TAG_PARSE_DELAY_MS = 220;
 const ACTIVE_TAG_PARSE_LARGE_BODY_CHARS = 120_000;
 const ACTIVE_TAG_PARSE_LARGE_BODY_DELAY_MS = 900;
-
-export function getPublishedNoteContextMenuItems({
-  published,
-  onManage,
-  onUnpublish,
-}: {
-  published: boolean;
-  onManage: () => void | Promise<void>;
-  onUnpublish: () => void | Promise<void>;
-}): ContextMenuItem[] {
-  const items: ContextMenuItem[] = [
-    {
-      label: published ? "Manage published note…" : "Publish note…",
-      icon: <LinkIcon />,
-      onSelect: onManage,
-    },
-  ];
-
-  if (published) {
-    items.push({
-      label: "Unpublish note",
-      danger: true,
-      onSelect: onUnpublish,
-    });
-  }
-
-  return items;
-}
 
 function escapeForAttr(value: string): string {
   if (typeof CSS !== "undefined" && typeof CSS.escape === "function")
@@ -1115,9 +1076,6 @@ export function Sidebar(): JSX.Element {
     y: number;
     path: string;
   } | null>(null);
-  const [publishedNotePaths, setPublishedNotePaths] = useState<Set<string>>(
-    () => new Set(),
-  );
   const refreshNotes = useStore((s) => s.refreshNotes);
   const collapsedList = useStore((s) => s.collapsedFolders);
   const toggleCollapseAction = useStore((s) => s.toggleCollapseFolder);
@@ -1138,42 +1096,6 @@ export function Sidebar(): JSX.Element {
     [collapsed, toggleCollapseAction],
   );
 
-  useEffect(() => {
-    let cancelled = false;
-
-    setPublishedNotePaths(new Set());
-    if (typeof window.zen.listCloudPublishedNotes === "function") {
-      void window.zen
-        .listCloudPublishedNotes()
-        .then((publishedNotes) => {
-          if (cancelled) return;
-          setPublishedNotePaths(
-            new Set(
-              publishedNotes.flatMap((publishedNote) =>
-                publishedNote.note_path ? [publishedNote.note_path] : [],
-              ),
-            ),
-          );
-        })
-        .catch(() => {
-          // Publishing remains available when cloud status cannot be loaded.
-        });
-    }
-
-    const unsubscribe = subscribePublishedNoteChanges((change) => {
-      setPublishedNotePaths((current) => {
-        const next = new Set(current);
-        if (change.url === null) next.delete(change.notePath);
-        else next.add(change.notePath);
-        return next;
-      });
-    });
-
-    return () => {
-      cancelled = true;
-      unsubscribe();
-    };
-  }, [vault?.root]);
   const setCollapsed = (next: Set<string>): void =>
     setCollapsedFoldersAction([...next]);
 
@@ -2315,56 +2237,6 @@ export function Sidebar(): JSX.Element {
           await selectNote(meta.path);
         },
       });
-      // Publishing talks to a signed-in Cloud account; without one the entry
-      // could only open a dialog that fails, so it leaves the menu together
-      // with the header button.
-      if (isCloudAccountConnectedPhase(useCloudSyncStatusStore.getState().phase)) {
-        const published = publishedNotePaths.has(n.path);
-        items.push({ kind: "separator" });
-        items.push(
-          ...getPublishedNoteContextMenuItems({
-            published,
-            onManage: async () => {
-              const state = useStore.getState();
-              const content =
-                state.noteContents[n.path] ?? (await window.zen.readNote(n.path));
-              requestPublishNote(content);
-            },
-            onUnpublish: async () => {
-              const confirmed = await confirmApp({
-                title: `Unpublish ${n.title}?`,
-                description:
-                  "The public link will stop working. Your local and synced note are not changed.",
-                confirmLabel: "Unpublish",
-                danger: true,
-              });
-              if (!confirmed) return;
-
-              try {
-                const publishedNote = (await window.zen.listCloudPublishedNotes()).find(
-                  (candidate) => candidate.note_path === n.path,
-                );
-                if (publishedNote) {
-                  await window.zen.unpublishCloudNote(publishedNote.id);
-                }
-                notifyPublishedNoteChanged({ notePath: n.path, url: null });
-                useToastStore
-                  .getState()
-                  .addToast("Note unpublished.", "success");
-              } catch (error) {
-                useToastStore
-                  .getState()
-                  .addToast(
-                    error instanceof Error
-                      ? error.message
-                      : "ZenNotes could not unpublish this note.",
-                    "error",
-                  );
-              }
-            },
-          }),
-        );
-      }
       items.push({ kind: "separator" });
       items.push({
         label: "Change icon…",
@@ -2522,7 +2394,6 @@ export function Sidebar(): JSX.Element {
     vaultSettings.favorites,
     bulkSelectionMenuItems,
     selectedSidebarKeys,
-    publishedNotePaths,
     folderLabels.archive,
     folderLabels.inbox,
     folderLabels.trash,

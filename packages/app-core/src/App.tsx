@@ -20,7 +20,6 @@ import { NoteList } from './components/NoteList'
 import { TitleBar } from './components/TitleBar'
 import { PromptHost } from './components/PromptHost'
 import { ConfirmHost } from './components/ConfirmHost'
-import { PublishNoteHost } from './components/PublishNoteHost'
 import { ServerDirectoryPickerHost } from './components/ServerDirectoryPickerHost'
 import { ToastHost } from './components/ui'
 import { ExcalidrawEmbedMenuHost } from './components/ExcalidrawEmbedMenuHost'
@@ -55,7 +54,6 @@ import {
   appUpdatePrimaryActionLabel,
   useAppUpdateState
 } from './lib/app-update-state'
-import { ensureCloudAutoSyncStarted, stopCloudAutoSync } from './lib/cloud-auto-sync'
 
 let editorModulePromise: Promise<typeof import('./components/Editor')> | null = null
 const EDITOR_MODULE_WARMUP_GRACE_MS = 40
@@ -389,12 +387,6 @@ function App(): JSX.Element {
   useEffect(() => {
     void init()
   }, [init])
-
-  useEffect(() => {
-    if (!vault) return undefined
-    ensureCloudAutoSyncStarted()
-    return stopCloudAutoSync
-  }, [vault?.root])
 
   useEffect(() => {
     if (!vault) return undefined
@@ -1082,7 +1074,6 @@ function App(): JSX.Element {
         </Suspense>
         <PromptHost />
         <ConfirmHost />
-        <PublishNoteHost />
         <ToastHost />
         <ExcalidrawEmbedMenuHost />
         <ServerDirectoryPickerHost />
@@ -1100,7 +1091,6 @@ function App(): JSX.Element {
         </Suspense>
         <PromptHost />
         <ConfirmHost />
-        <PublishNoteHost />
         <ToastHost />
         <ExcalidrawEmbedMenuHost />
         <ServerDirectoryPickerHost />
@@ -1173,7 +1163,6 @@ function App(): JSX.Element {
       )}
       <PromptHost />
       <ConfirmHost />
-      <PublishNoteHost />
       <ToastHost />
       <ExcalidrawEmbedMenuHost />
       <ServerDirectoryPickerHost />

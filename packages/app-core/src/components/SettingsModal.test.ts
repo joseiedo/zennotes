@@ -4,14 +4,6 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SettingsModal } from "./SettingsModal";
-import { requestSettingsTarget } from "../lib/settings-navigation";
-
-const cloudMocks = vi.hoisted(() => ({
-  getCloudAccountStatus: vi
-    .fn()
-    .mockResolvedValue({ state: "disconnected", account: null }),
-  onCloudAccountChange: vi.fn(() => vi.fn()),
-}));
 
 const mocks = vi.hoisted(() => {
   const state = new Proxy(
@@ -105,9 +97,7 @@ vi.mock("@zennotes/bridge-contract/bridge", () => ({
     getCapabilities: () => ({
       supportsCustomTemplates: true,
       supportsRemoteWorkspace: false,
-      supportsCloudSync: true,
     }),
-    ...cloudMocks,
   }),
 }));
 
@@ -284,21 +274,5 @@ describe("SettingsModal date note directories", () => {
     expect(mocks.state.setVimWrappedLineMotions).toHaveBeenCalledWith(
       "display",
     );
-  });
-
-  it("opens directly to ZenNotes Cloud when requested by the app shell", async () => {
-    requestSettingsTarget("cloud");
-    await act(async () => {
-      root.render(createElement(SettingsModal));
-    });
-
-    const cloudButton = [
-      ...host.querySelectorAll<HTMLButtonElement>("button"),
-    ].find((button) => button.textContent?.trim() === "Cloud");
-    expect(cloudButton).toBeTruthy();
-    expect(cloudButton?.className).toContain("bg-paper-200/85");
-
-    expect(host.textContent).toContain("Keep your vault available everywhere");
-    expect(host.textContent).toContain("Connect ZenNotes Cloud");
   });
 });

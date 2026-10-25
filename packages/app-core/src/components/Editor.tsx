@@ -49,7 +49,6 @@ import {
   openExternalFileLink,
 } from "../lib/external-file-link";
 import { StatusBar } from "./StatusBar";
-import { useCloudSyncStatusStore } from "../lib/cloud-auto-sync";
 import { EditorPane } from "./EditorPane";
 import { focusPaneInDirection, focusPaneOrEdgePanel } from "../lib/pane-nav";
 import { requestPaneMode } from "../lib/pane-mode";
@@ -1503,9 +1502,6 @@ export function Editor(): JSX.Element {
   const keymapOverrides = useStore((s) => s.keymapOverrides);
   const vimInsertEscape = useStore((s) => s.vimInsertEscape);
   const zenMode = useStore((s) => s.zenMode);
-  const cloudSyncVisible = useCloudSyncStatusStore(
-    (state) => state.phase !== "hidden",
-  );
 
   useEffect(() => {
     registerVimCommands();
@@ -1525,7 +1521,7 @@ export function Editor(): JSX.Element {
       <div className="flex min-h-0 min-w-0 flex-1">
         <PaneTreeView node={paneLayout} />
       </div>
-      {!zenMode && (activeNote || cloudSyncVisible) && (
+      {!zenMode && activeNote && (
         <StatusBar note={activeNote} />
       )}
     </section>
