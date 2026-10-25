@@ -117,9 +117,11 @@ func (s *Store) saveLocked(f rulesFile) error {
 // (oldPrefix/...) to the same place under newPrefix, after a rename, move or
 // (with copy) duplicate. Public marks are never carried: a moved public item
 // becomes private. A hidden mark wins over any mark already at the
-// destination. When the rules file cannot be written the carried marks stay
-// in memory (Get reports them) and the error is returned, so the moved item
-// is still hidden while the process runs.
+// destination. A move never makes content public either: when oldPrefix was
+// not public (hidden by an ancestor, or unmarked) and newPrefix would be, a
+// hidden mark is added at newPrefix. When the rules file cannot be written
+// the new marks stay in memory (Get reports them) and the error is returned,
+// so the moved item is still hidden while the process runs.
 func (s *Store) RewriteHidden(vaultRoot, oldPrefix, newPrefix string, copy bool) error {
 	if oldPrefix == newPrefix || !validKey(oldPrefix) || !validKey(newPrefix) {
 		return nil
@@ -128,6 +130,7 @@ func (s *Store) RewriteHidden(vaultRoot, oldPrefix, newPrefix string, copy bool)
 	defer s.mu.Unlock()
 	f := s.load()
 	r := s.rulesLocked(f, vaultRoot)
+	wasPublic := NewPolicy(SiteRules{Rules: r.Rules}).IsPublic(oldPrefix)
 	carried := map[string]Mark{}
 	for k, m := range r.Rules {
 		if m != MarkHidden {
@@ -145,6 +148,12 @@ func (s *Store) RewriteHidden(vaultRoot, oldPrefix, newPrefix string, copy bool)
 		if !copy {
 			delete(r.Rules, k)
 		}
+	}
+	for k, m := range carried {
+		r.Rules[k] = m
+	}
+	if !wasPublic && NewPolicy(SiteRules{Rules: r.Rules}).IsPublic(newPrefix) {
+		carried[newPrefix] = MarkHidden
 	}
 	if len(carried) == 0 {
 		return nil

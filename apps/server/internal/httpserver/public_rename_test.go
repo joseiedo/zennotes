@@ -46,6 +46,7 @@ func renameFixtureFiles() map[string]string {
 		"Blog/img/secret.png":       string(pngBytes),
 		"Blog/img/sub/.keep.png":    string(pngBytes),
 		"Blog/Other/placeholder.md": "public\n",
+		"Private/p.md":              "SECRET-PRIVATE body\n",
 	}
 }
 
@@ -135,6 +136,16 @@ func TestRenameKeepsHiddenNotesPrivate(t *testing.T) {
 			var out struct{ Subpath string }
 			adminPost(t, f, "/folders/rename", map[string]string{"folder": "inbox", "oldSubpath": "Blog/Drafts", "newSubpath": "Blog/drafts"}, &out)
 			return []string{out.Subpath + "/d.md"}
+		}},
+		{"notes/archive of a note hidden by its folder", func(t *testing.T, f *publicFixture) []string {
+			var meta struct{ Path string }
+			adminPost(t, f, "/notes/archive", map[string]string{"path": "Blog/Drafts/d.md"}, &meta)
+			return []string{meta.Path}
+		}},
+		{"notes/move of an unmarked private note into a public folder", func(t *testing.T, f *publicFixture) []string {
+			var meta struct{ Path string }
+			adminPost(t, f, "/notes/move", map[string]string{"path": "Private/p.md", "targetFolder": "inbox", "targetSubpath": "Blog"}, &meta)
+			return []string{meta.Path}
 		}},
 		{"folders/duplicate", func(t *testing.T, f *publicFixture) []string {
 			var out struct{ Subpath string }

@@ -104,3 +104,49 @@ func TestRewriteHiddenWriteFailureFailsClosed(t *testing.T) {
 		t.Fatal("pending hidden mark not persisted by the next Put")
 	}
 }
+
+// A move must never make content public: a source that was not public (hidden
+// by an ancestor, or simply unmarked) gets a hidden mark at a destination
+// that would otherwise be public.
+func TestRewriteHiddenHidesSourceThatWasNotPublic(t *testing.T) {
+	cases := []struct{ name, from, to string }{
+		{"hidden by its folder, archived into a public archive", "Blog/Drafts/d.md", "archive/Blog/Drafts/d.md"},
+		{"unmarked private note moved into a public folder", "Private/p.md", "Blog/p.md"},
+		{"unmarked private folder moved into a public folder", "Private", "Blog/Private"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := newRewriteStore(t, map[string]Mark{"Blog": MarkPublic, "Blog/Drafts": MarkHidden, "archive": MarkPublic})
+			if err := s.RewriteHidden("/v", c.from, c.to, false); err != nil {
+				t.Fatal(err)
+			}
+			if got := s.Get("/v").Rules[c.to]; got != MarkHidden {
+				t.Fatalf("destination mark = %q, rules %+v", got, s.Get("/v").Rules)
+			}
+			if NewPolicy(NewStore(s.path).Get("/v")).IsPublic(c.to) {
+				t.Fatal("hidden destination mark not persisted")
+			}
+		})
+	}
+}
+
+func TestRewriteHiddenLeavesPublicSourceAlone(t *testing.T) {
+	s := newRewriteStore(t, map[string]Mark{"Blog": MarkPublic, "archive": MarkPublic})
+	if err := s.RewriteHidden("/v", "Blog/a.md", "archive/Blog/a.md", false); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]Mark{"Blog": MarkPublic, "archive": MarkPublic}
+	if got := s.Get("/v").Rules; !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestRewriteHiddenPrivateDestinationNeedsNoMark(t *testing.T) {
+	s := newRewriteStore(t, map[string]Mark{"Blog": MarkPublic})
+	if err := s.RewriteHidden("/v", "Private/p.md", "Other/p.md", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.Get("/v").Rules["Other/p.md"]; ok {
+		t.Fatalf("unneeded mark added: %+v", s.Get("/v").Rules)
+	}
+}
