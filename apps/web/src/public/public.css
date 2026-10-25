@@ -155,6 +155,12 @@ body {
   height: auto;
 }
 
+/* Break words longer than the line (URLs, hashes) instead of overflowing.
+ * break-word, not anywhere, so table columns keep their natural widths. */
+.zn-note {
+  overflow-wrap: break-word;
+}
+
 /* Read-only: no "expand diagram" modal on the public site. */
 .zn-note .zen-diagram-expand {
   display: none;
