@@ -27,8 +27,11 @@ let
     installPhase = ''
       runHook preInstall
 
-      mkdir -p "$out"
-      cp -R apps/web/dist/. "$out/"
+      # Both bundles the server embeds: the admin app (web/dist) and the
+      # public-site reader (web/dist-public, required by go:embed).
+      mkdir -p "$out/dist" "$out/dist-public"
+      cp -R apps/web/dist/. "$out/dist/"
+      cp -R apps/web/dist-public/. "$out/dist-public/"
 
       runHook postInstall
     '';
@@ -49,9 +52,10 @@ buildGoModule (finalAttrs: {
   ];
 
   preBuild = ''
-    rm -rf web/dist
-    mkdir -p web/dist
-    cp -R ${web}/. web/dist/
+    rm -rf web/dist web/dist-public
+    mkdir -p web/dist web/dist-public
+    cp -R ${web}/dist/. web/dist/
+    cp -R ${web}/dist-public/. web/dist-public/
   '';
 
   meta = {
