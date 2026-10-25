@@ -10,6 +10,8 @@ export type PublicSiteConfig = {
   rules: Record<string, PublicMark>
   missingPaths: string[]
   homeNotePublic: boolean
+  /** Send back with the next save; the server rejects (409) a stale one. */
+  version: string
 }
 
 export type PublicVisibility = {

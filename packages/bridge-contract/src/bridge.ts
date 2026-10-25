@@ -169,6 +169,8 @@ export interface ZenBridge {
   setPublicSiteConfig?(input: {
     homeNote: string
     rules: Record<string, PublicMark>
+    /** `version` of the config this edit is based on. */
+    version: string
   }): Promise<PublicSiteConfig>
   /** Create or overwrite a workflow file; returns the saved file. */
   writeWorkflow(input: WriteWorkflowInput): Promise<WorkflowFile>

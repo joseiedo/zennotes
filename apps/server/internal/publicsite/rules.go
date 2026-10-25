@@ -1,7 +1,10 @@
 package publicsite
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -82,7 +85,41 @@ func validKey(k string) bool {
 	return true
 }
 
+// ErrStaleRules is returned by PutIfVersion when the rules changed since the
+// caller read them.
+var ErrStaleRules = errors.New("public site rules changed since they were loaded")
+
+// Version identifies the current rules of a vault (including marks only kept
+// in memory). It changes whenever they do, e.g. after a rename carried a
+// hidden mark.
+func (s *Store) Version(vaultRoot string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return versionOf(s.rulesLocked(s.load(), vaultRoot))
+}
+
+func versionOf(r SiteRules) string {
+	if r.Rules == nil {
+		r.Rules = map[string]Mark{}
+	}
+	data, _ := json.Marshal(r) // map keys marshal sorted, so this is stable
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+// PutIfVersion replaces the rules like Put, but only when version still
+// matches the stored rules; otherwise it returns ErrStaleRules and changes
+// nothing. This keeps a settings panel opened before a rename from dropping
+// the hidden marks the rename carried.
+func (s *Store) PutIfVersion(vaultRoot string, r SiteRules, version string) error {
+	return s.put(vaultRoot, r, &version)
+}
+
 func (s *Store) Put(vaultRoot string, r SiteRules) error {
+	return s.put(vaultRoot, r, nil)
+}
+
+func (s *Store) put(vaultRoot string, r SiteRules, version *string) error {
 	for k, m := range r.Rules {
 		if !validKey(k) {
 			return fmt.Errorf("invalid rule path %q", k)
@@ -97,6 +134,9 @@ func (s *Store) Put(vaultRoot string, r SiteRules) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	f := s.load()
+	if version != nil && *version != versionOf(s.rulesLocked(f, vaultRoot)) {
+		return ErrStaleRules
+	}
 	f.Vaults[vaultRoot] = r
 	if err := s.saveLocked(f); err != nil {
 		return err

@@ -65,6 +65,18 @@ func loginAtBase(t *testing.T, base, token string) http.CookieJar {
 
 func psDo(t *testing.T, base string, jar http.CookieJar, method string, body any) (int, map[string]any) {
 	t.Helper()
+	// A PUT must name the version it was based on; tests that don't care
+	// about staleness get the current one filled in.
+	if m, ok := body.(map[string]any); ok && method == "PUT" && jar != nil {
+		if _, set := m["version"]; !set {
+			_, cur := psDo(t, base, jar, "GET", nil)
+			with := map[string]any{"version": cur["version"]}
+			for k, v := range m {
+				with[k] = v
+			}
+			body = with
+		}
+	}
 	var rdr *bytes.Reader
 	if body != nil {
 		b, _ := json.Marshal(body)
@@ -214,5 +226,52 @@ func TestPublicSiteAdminHomeNotePublicMatchesPublicRoot(t *testing.T) {
 		if got["homeNotePublic"] != want {
 			t.Errorf("%s: homeNotePublic = %v, want %v", home, got["homeNotePublic"], want)
 		}
+	}
+}
+
+func TestPublicSiteAdminRejectsStalePut(t *testing.T) {
+	_, srv, jar := newPublicSiteAdmin(t, true)
+	_, first := psDo(t, srv, jar, "GET", nil)
+	v1, _ := first["version"].(string)
+	if v1 == "" {
+		t.Fatalf("GET has no version: %+v", first)
+	}
+	code, saved := psDo(t, srv, jar, "PUT", map[string]any{"version": v1, "rules": map[string]string{"Blog": "public"}})
+	if code != http.StatusOK || saved["version"] == v1 {
+		t.Fatalf("first PUT: %d %+v", code, saved)
+	}
+	// A second tab still holding v1 must not overwrite the newer rules.
+	code, _ = psDo(t, srv, jar, "PUT", map[string]any{"version": v1, "rules": map[string]string{}})
+	if code != http.StatusConflict {
+		t.Fatalf("stale PUT: %d, want 409", code)
+	}
+	code, _ = psDo(t, srv, jar, "PUT", map[string]any{"version": "", "rules": map[string]string{}})
+	if code != http.StatusConflict {
+		t.Fatalf("PUT without version: %d, want 409", code)
+	}
+	_, now := psDo(t, srv, jar, "GET", nil)
+	if rules, _ := now["rules"].(map[string]any); rules["Blog"] != "public" {
+		t.Fatalf("rules changed by rejected PUTs: %+v", now)
+	}
+}
+
+// A rename carries a hidden mark; a settings tab opened before it must not
+// drop that mark with its next save.
+func TestPublicSiteAdminStaleTabCannotDropCarriedHiddenMark(t *testing.T) {
+	s, srv, jar := newPublicSiteAdmin(t, true)
+	root := s.currentVault().Root()
+	if err := s.publicRules.Put(root, publicsite.SiteRules{Rules: map[string]publicsite.Mark{"Blog": publicsite.MarkPublic, "Blog/Drafts": publicsite.MarkHidden}}); err != nil {
+		t.Fatal(err)
+	}
+	_, tab := psDo(t, srv, jar, "GET", nil)
+	if err := s.publicRules.RewriteHidden(root, "Blog/Drafts", "Blog/Later", false); err != nil {
+		t.Fatal(err)
+	}
+	code, _ := psDo(t, srv, jar, "PUT", map[string]any{"version": tab["version"], "rules": map[string]string{"Blog": "public", "Blog/Drafts": "hidden", "Other": "public"}})
+	if code != http.StatusConflict {
+		t.Fatalf("stale PUT after rename: %d, want 409", code)
+	}
+	if got := s.publicRules.Get(root).Rules["Blog/Later"]; got != publicsite.MarkHidden {
+		t.Fatalf("carried hidden mark lost: %q", got)
 	}
 }

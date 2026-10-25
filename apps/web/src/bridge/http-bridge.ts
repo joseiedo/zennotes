@@ -755,6 +755,7 @@ function getPublicSiteConfig(): Promise<PublicSiteConfig> {
 function setPublicSiteConfig(input: {
   homeNote: string
   rules: Record<string, PublicMark>
+  version: string
 }): Promise<PublicSiteConfig> {
   return jsonRequest<PublicSiteConfig>('/public-site', { method: 'PUT', body: input })
 }

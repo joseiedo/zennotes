@@ -6,6 +6,7 @@ import {
   type PublicSiteConfig,
 } from "@shared/public-site-rules";
 import { createSaveQueue } from "../lib/save-queue";
+import { createVersionedSend } from "../lib/versioned-send";
 import { useStore } from "../store";
 
 type Rules = Record<string, PublicMark>;
@@ -185,32 +186,51 @@ export function PublicSiteSettings(): JSX.Element {
   const [saving, setSaving] = useState(false);
   const [open, setOpen] = useState<Set<string>>(new Set());
 
+  // Every save names the version it was built on, so this panel can't
+  // overwrite rules changed elsewhere since it loaded them (another tab, or a
+  // rename that carried a hidden mark); the server answers 409 and we resync.
+  const versioned = useMemo(
+    () =>
+      createVersionedSend(
+        (input: { homeNote: string; rules: Rules; version: string }) =>
+          window.zen.setPublicSiteConfig!(input),
+      ),
+    [],
+  );
+  const applyServerConfig = useCallback(
+    (c: PublicSiteConfig) => {
+      versioned.setVersion(c.version);
+      setConfig(c);
+    },
+    [versioned],
+  );
+
   useEffect(() => {
     let cancelled = false;
     void window.zen
       .getPublicSiteConfig?.()
-      .then((c) => !cancelled && setConfig(c))
+      .then((c) => !cancelled && applyServerConfig(c))
       .catch((e) => !cancelled && setError(e instanceof Error ? e.message : String(e)));
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [applyServerConfig]);
 
   const save = useMemo(
     () =>
       createSaveQueue<{ homeNote: string; rules: Rules }, PublicSiteConfig>({
-        send: (next) => window.zen.setPublicSiteConfig!(next),
+        send: (next) => versioned.send(next),
         onSaved: (saved) => {
           setError(null);
           setConfig(saved);
         },
         onError: (e) => setError(e instanceof Error ? e.message : String(e)),
         resync: async () => {
-          setConfig(await window.zen.getPublicSiteConfig!());
+          applyServerConfig(await window.zen.getPublicSiteConfig!());
         },
         onBusyChange: setSaving,
       }),
-    [],
+    [versioned, applyServerConfig],
   );
   const saveNext = useCallback(
     (next: { homeNote: string; rules: Rules }): void => {

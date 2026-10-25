@@ -1,6 +1,7 @@
 package httpserver
 
 import (
+	"errors"
 	"net/http"
 	"sort"
 	"strings"
@@ -13,10 +14,13 @@ type publicSiteResponse struct {
 	Rules          map[string]publicsite.Mark `json:"rules"`
 	MissingPaths   []string                   `json:"missingPaths"`
 	HomeNotePublic bool                       `json:"homeNotePublic"`
+	// Version must be sent back with a PUT; a stale one gets 409.
+	Version string `json:"version"`
 }
 
 func (s *Server) publicSiteState(rules publicsite.SiteRules) (publicSiteResponse, error) {
 	v := s.currentVault()
+	version := s.publicRules.Version(v.Root())
 	notes, err := v.ListNotes()
 	if err != nil {
 		return publicSiteResponse{}, err
@@ -62,6 +66,7 @@ func (s *Server) publicSiteState(rules publicsite.SiteRules) (publicSiteResponse
 		Rules:          rules.Rules,
 		MissingPaths:   missing,
 		HomeNotePublic: homePublic,
+		Version:        version,
 	}, nil
 }
 
@@ -75,13 +80,20 @@ func (s *Server) getPublicSite(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) putPublicSite(w http.ResponseWriter, r *http.Request) {
-	var in publicsite.SiteRules
+	var in struct {
+		publicsite.SiteRules
+		Version string `json:"version"`
+	}
 	if err := readJSON(r, &in); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
 	root := s.currentVault().Root()
-	if err := s.publicRules.Put(root, in); err != nil {
+	if err := s.publicRules.PutIfVersion(root, in.SiteRules, in.Version); err != nil {
+		if errors.Is(err, publicsite.ErrStaleRules) {
+			http.Error(w, "the public site rules changed since this page loaded them (e.g. a rename elsewhere); reload and try again", http.StatusConflict)
+			return
+		}
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
