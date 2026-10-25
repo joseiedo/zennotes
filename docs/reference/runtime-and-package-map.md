@@ -171,5 +171,4 @@ As a rule:
 ## Related docs
 
 - [Monorepo Architecture](../monorepo-architecture.md)
-- [Web Architecture](../web-architecture.md)
 - [How ZenNotes Works](../explanation/how-zennotes-works.md)

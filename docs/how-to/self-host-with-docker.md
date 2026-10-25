@@ -490,6 +490,5 @@ watch part of the vault.
 
 ## Related docs
 
-- [Connect Desktop to a Remote ZenNotes Server](./connect-desktop-to-remote-server.md)
 - [Vault and Folder Model](../reference/vault-and-folder-model.md)
 - [How ZenNotes Works](../explanation/how-zennotes-works.md)

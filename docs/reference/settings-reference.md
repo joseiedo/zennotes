@@ -385,8 +385,6 @@ Differences against a server:
 - `zn open` hands file paths to the desktop app, so it needs a local vault. Use `zn read` to print a remote note.
 - `zn search` runs the server's search engine rather than the CLI's own scan, so ordering can differ. `--limit` is applied after the server responds.
 
-See [Connect Desktop to a Remote ZenNotes Server](../how-to/connect-desktop-to-remote-server.md) for the full guide.
-
 ### Raycast
 
 On macOS, the Raycast integration is installed from the `CLI` settings page.

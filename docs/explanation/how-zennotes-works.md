@@ -234,8 +234,6 @@ That is why the docs are intentionally split by purpose rather than being one gi
 
 ## Related docs
 
-- [Get Started on Desktop](../tutorials/get-started-desktop.md)
 - [Self-Host with Docker](../how-to/self-host-with-docker.md)
-- [Connect Desktop to a Remote ZenNotes Server](../how-to/connect-desktop-to-remote-server.md)
 - [Settings Reference](../reference/settings-reference.md)
 - [Vault and Folder Model](../reference/vault-and-folder-model.md)
