@@ -161,6 +161,15 @@ body {
   overflow-wrap: break-word;
 }
 
+/* Plain images: app-core frames them like editor blocks (border, tint, accent
+ * on hover); the reader just rounds the corners. */
+.zn-note .local-image-embed-frame,
+.zn-note .local-image-embed:hover .local-image-embed-frame {
+  border: 0;
+  background: none;
+  box-shadow: none;
+}
+
 /* Read-only: no "expand diagram" modal on the public site. */
 .zn-note .zen-diagram-expand {
   display: none;

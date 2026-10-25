@@ -220,10 +220,10 @@ function buildImageFigure(img: HTMLImageElement, href: string): HTMLElement {
   if (w > 0) img.style.width = `${w}px`
   if (h > 0) img.style.height = `${h}px`
   frame.append(img)
-  const caption = document.createElement('figcaption')
-  caption.className = 'local-image-embed-caption'
-  caption.textContent = img.getAttribute('alt')?.trim() || fileLabel(href, 'Image')
-  figure.append(frame, caption)
+  // No caption: the public site shows the bare image. Keep a text alternative
+  // for screen readers, falling back to the file name.
+  if (!img.getAttribute('alt')?.trim()) img.setAttribute('alt', fileLabel(href, 'Image'))
+  figure.append(frame)
   return figure
 }
 
