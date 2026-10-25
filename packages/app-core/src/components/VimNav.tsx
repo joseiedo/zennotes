@@ -1,0 +1,2395 @@
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { completionStatus } from '@codemirror/autocomplete'
+import { isAtlasViewActive, isTagsViewActive, isTasksViewActive, useStore } from '../store'
+import { HintOverlay } from './HintOverlay'
+import { WhichKeyOverlay, type WhichKeyItem } from './WhichKeyOverlay'
+import {
+  clearEditorPendingVimStatus,
+  getVisiblePanelsNow,
+  hintTargetOpensNote,
+  isEditorFocused,
+  isEditorInsertMode,
+  isEditorVisualMode,
+  jumplistKeepsChord,
+  isVimAwaitingArgument,
+  resolveNextPanel,
+  shouldYieldToHomeNav
+} from '../lib/vim-nav'
+import { isCalendarToggleAvailable } from '../lib/vault-layout'
+import { focusPanel, focusPaneInDirection } from '../lib/pane-nav'
+import {
+  findPositionByIndex,
+  getIndexedElementByIndex,
+  getIndexedElements,
+  getIndexedValue,
+  scrollToIndexedElement,
+  scrollToIndexedIndex,
+  type IndexedDatasetKey
+} from '../lib/panel-rows'
+import { findLeaf } from '../lib/pane-layout'
+import { boundedIndexCount, clampIndex, moveIndex } from '../lib/index-navigation'
+import {
+  advanceSequence,
+  getKeymapBinding,
+  getKeymapDisplay,
+  getSequenceTokens,
+  matchesSequenceToken,
+  matchesShortcutBinding,
+  sequenceTokenFromEvent
+} from '../lib/keymaps'
+import { toggleWrap, wrapLink } from '../lib/cm-format'
+import {
+  ZEN_OPEN_EDITOR_CONTEXT_MENU_EVENT,
+  dispatchKeyboardContextMenu,
+  findTabContextMenuTarget
+} from '../lib/keyboard-context-menu'
+import { getBufferNavigationTarget } from '../lib/buffer-navigation'
+import { focusEditorNormalMode } from '../lib/editor-focus'
+import { atlasHoldsKeyboard } from '../lib/atlas'
+import { SELF_KEYED_SURFACES } from '../lib/self-keyed-surfaces'
+import { isWorkspaceVirtualTabPath } from '../lib/workspace-tabs'
+import {
+  isExcalidrawPath,
+  isObsidianExcalidrawMarkdown,
+  isObsidianExcalidrawPath
+} from '@shared/excalidraw'
+
+function escapeForAttr(value: string): string {
+  if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') return CSS.escape(value)
+  return value.replace(/["\\]/g, '\\$&')
+}
+
+
+/**
+ * Global vim-style keyboard navigation layer.
+ *
+ * Uses refs (not React state) for all internal flags so the capture-phase
+ * keydown handler always reads the latest values — no stale closures, no
+ * dependency on React re-renders between keystrokes.
+ */
+// #309: how quickly a Space press+release inside an Excalidraw canvas counts as
+// a "tap" (arm the leader) rather than a hold (let Excalidraw's Hand tool pan).
+// Tuned so a deliberate hold-to-pan clears it while a natural tap stays under it.
+const EXCALIDRAW_LEADER_TAP_MS = 250
+
+export function VimNav(): JSX.Element | null {
+  const vimMode = useStore((s) => s.vimMode)
+  const keymapOverrides = useStore((s) => s.keymapOverrides)
+  // All control-flow flags are refs so the handler never stales.
+  const ctrlWPending = useRef(false)
+  const jumpTopPending = useRef(0)
+  const previousBufferPending = useRef(0)
+  const nextBufferPending = useRef(0)
+  // #321: `g`-prefix pending for gt/gT. Tracked separately (not via advanceSequence)
+  // because `g` is shared with gg/gd, so it must NOT be consumed on the `g` press.
+  const gTabPending = useRef(false)
+  const bufferCount = useRef<{ n: number; at: number } | null>(null)
+  const leaderPending = useRef<'leader' | 'leader-l' | 'leader-s' | null>(null)
+  const ctrlWTimer = useRef<ReturnType<typeof setTimeout>>()
+  const jumpTopTimer = useRef<ReturnType<typeof setTimeout>>()
+  const previousBufferTimer = useRef<ReturnType<typeof setTimeout>>()
+  const nextBufferTimer = useRef<ReturnType<typeof setTimeout>>()
+  const gTabTimer = useRef<ReturnType<typeof setTimeout>>()
+  const leaderTimer = useRef<ReturnType<typeof setTimeout>>()
+  // #309: timestamp of the last Space keydown observed inside an Excalidraw
+  // canvas (or null). A quick keyup after it arms the leader; a longer hold was
+  // a pan and arms nothing.
+  const excalidrawSpaceDownAt = useRef<number | null>(null)
+
+  // Hint mode needs a render (to mount HintOverlay), so it's state.
+  const [hintActive, setHintActive] = useState(false)
+  const [whichKeyState, setWhichKeyState] = useState<{
+    stage: 'leader' | 'leader-l' | 'leader-s'
+    allowEditorActions: boolean
+  } | null>(null)
+  const hintRef = useRef(false)
+  const setHint = useCallback((v: boolean) => {
+    hintRef.current = v
+    setHintActive(v)
+  }, [])
+  const exitHints = useCallback(
+    (activated?: HTMLElement) => {
+      setHint(false)
+      // #100: if the hint opened a note — a sidebar note row or a note tab —
+      // land in the editor instead of the sidebar row / tab you clicked.
+      if (hintTargetOpensNote(activated)) focusEditorNormalMode()
+    },
+    [setHint]
+  )
+  const focusEditor = useCallback(() => {
+    const state = useStore.getState()
+    state.setFocusedPanel('editor')
+    state.editorViewRef?.focus()
+  }, [])
+  const focusTabs = useCallback(() => {
+    const state = useStore.getState()
+    const leaf = findLeaf(state.paneLayout, state.activePaneId)
+    if (!leaf?.activeTab || leaf.tabs.length === 0 || !state.tabsEnabled || state.zenMode) {
+      return false
+    }
+    state.setFocusedPanel('tabs')
+    ;(document.activeElement as HTMLElement | null)?.blur?.()
+    requestAnimationFrame(() => {
+      const target = findTabContextMenuTarget(leaf.id, leaf.activeTab ?? '')
+      target?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+    })
+    return true
+  }, [])
+  const jumpNoteHistory = useCallback((direction: 'back' | 'forward') => {
+    const state = useStore.getState()
+    const previewEl = getPreviewScrollElement()
+    const activeTarget = document.activeElement as HTMLElement | null
+    const keepPreviewFocus = previewEl
+      ? isPreviewNavigationActive(previewEl, state, activeTarget)
+      : false
+    const jump =
+      direction === 'back' ? state.jumpToPreviousNote : state.jumpToNextNote
+    void jump().then(() => {
+      const latest = useStore.getState()
+      if (!latest.activeNote) return
+      latest.setFocusedPanel('editor')
+      requestAnimationFrame(() => {
+        if (keepPreviewFocus) {
+          getPreviewScrollElement()?.focus()
+          return
+        }
+        useStore.getState().editorViewRef?.focus()
+      })
+    })
+  }, [])
+  const navigateBuffer = useCallback((delta: number): void => {
+    const focusIfCurrentNoteTab = (paneId: string, path: string): void => {
+      const latest = useStore.getState()
+      const leaf = findLeaf(latest.paneLayout, paneId)
+      if (latest.activePaneId !== paneId || leaf?.activeTab !== path) return
+      if (isWorkspaceVirtualTabPath(path)) return
+      if (isExcalidrawPath(path) || isObsidianExcalidrawPath(path)) return
+      if (isObsidianExcalidrawMarkdown(latest.noteContents[path]?.body)) return
+      focusEditorNormalMode()
+    }
+    const state = useStore.getState()
+    const target = getBufferNavigationTarget(
+      state.paneLayout,
+      state.activePaneId,
+      state.notes,
+      delta
+    )
+    if (target.kind === 'focus') {
+      void state.focusTabInPane(target.paneId, target.path).then(() => {
+        focusIfCurrentNoteTab(target.paneId, target.path)
+      })
+      return
+    }
+    if (target.kind === 'open') {
+      void state.openNoteInPane(target.paneId, target.path).then(() => {
+        focusIfCurrentNoteTab(target.paneId, target.path)
+      })
+      return
+    }
+    if (target.kind === 'create-quick') {
+      void state.createAndOpen('quick', '', { focusTitle: true })
+    }
+  }, [])
+  const cancelHints = useCallback(() => {
+    setHint(false)
+    focusEditor()
+  }, [focusEditor, setHint])
+  // The calendar toggle only works when the active pane holds a note (it can't
+  // render in the note-less Tasks/Tags views), so its leader hint is hidden
+  // there rather than shown as a dead key. (#413)
+  const calendarToggleAvailable = useStore((s) =>
+    isCalendarToggleAvailable(s.vaultSettings, s.activeNote)
+  )
+  const whichKeyHintsPref = useStore((s) => s.whichKeyHints)
+  const whichKeyHintMode = useStore((s) => s.whichKeyHintMode)
+  const whichKeyHintTimeoutMs = useStore((s) => s.whichKeyHintTimeoutMs)
+  const whichKeyHintsEnabled = vimMode && whichKeyHintsPref
+  const stickyWhichKeyHints = whichKeyHintsEnabled && whichKeyHintMode === 'sticky'
+  const canSwitchVaults =
+    window.zen.getAppInfo().runtime === 'desktop' &&
+    (window.zen.getCapabilities().supportsLocalFilesystemPickers ||
+      window.zen.getCapabilities().supportsRemoteWorkspace)
+  const resetLeader = useCallback(() => {
+    leaderPending.current = null
+    if (leaderTimer.current) clearTimeout(leaderTimer.current)
+    setWhichKeyState(null)
+  }, [])
+  const armLeader = useCallback(
+    (stage: 'leader' | 'leader-l' | 'leader-s', allowEditorActions: boolean) => {
+      leaderPending.current = stage
+      setWhichKeyState({ stage, allowEditorActions })
+      if (leaderTimer.current) clearTimeout(leaderTimer.current)
+      if (!stickyWhichKeyHints) {
+        leaderTimer.current = setTimeout(() => {
+          leaderPending.current = null
+          setWhichKeyState(null)
+        }, whichKeyHintTimeoutMs)
+      }
+    },
+    [stickyWhichKeyHints, whichKeyHintTimeoutMs]
+  )
+
+  const whichKeyItems: WhichKeyItem[] = (() => {
+    if (!whichKeyState) return []
+    if (whichKeyState.stage === 'leader-l') {
+      return [
+      {
+        keyLabel: getKeymapDisplay(keymapOverrides, 'vim.leaderFormatNote'),
+        label: 'Format note',
+        detail: 'Run markdown formatting on the active note.'
+      },
+      {
+        keyLabel: getKeymapDisplay(keymapOverrides, 'vim.leaderCopyMarkdown'),
+        label: 'Copy as Markdown',
+        detail: "Copy the whole note's Markdown to the clipboard."
+      },
+      {
+        keyLabel: getKeymapDisplay(keymapOverrides, 'vim.leaderToggleFavorite'),
+        label: 'Toggle favorite',
+        detail: 'Add or remove the active note from Favorites.'
+      }
+      ]
+    }
+    if (whichKeyState.stage === 'leader-s') {
+      return [
+        {
+          keyLabel: getKeymapDisplay(keymapOverrides, 'vim.leaderSearchVaultText'),
+          label: 'Search vault text',
+          detail: 'Fuzzy-search note contents across the vault.'
+        }
+      ]
+    }
+
+    const items: WhichKeyItem[] = [
+      ...(useStore.getState().atlasEnabled
+        ? [
+            {
+              keyLabel: getKeymapDisplay(keymapOverrides, 'vim.leaderAtlas'),
+              label: 'Open atlas',
+              detail: 'See the vault as a map of notes and links.'
+            }
+          ]
+        : []),
+      {
+        keyLabel: getKeymapDisplay(keymapOverrides, 'vim.leaderOpenBuffers'),
+        label: 'Open buffers',
+        detail: 'Show the active pane’s open buffers in a searchable list.'
+      },
+      {
+        keyLabel: getKeymapDisplay(keymapOverrides, 'vim.leaderSearchNotes'),
+        label: 'Search notes',
+        detail: 'Open the vault-wide note search palette.'
+      },
+      {
+        keyLabel: getKeymapDisplay(keymapOverrides, 'vim.leaderSearchGroup'),
+        label: 'Search…',
+        detail: 'Open the search group — then `t` for vault text search.'
+      },
+      {
+        keyLabel: getKeymapDisplay(keymapOverrides, 'vim.hintMode'),
+        label: 'Hint mode',
+        detail: 'Show jump labels to click any button or link by keyboard.'
+      },
+      {
+        keyLabel: getKeymapDisplay(keymapOverrides, 'vim.leaderToggleSidebar'),
+        label: 'Toggle sidebar',
+        detail: 'Show or hide the left sidebar.'
+      },
+      {
+        keyLabel: getKeymapDisplay(keymapOverrides, 'vim.leaderNoteOutline'),
+        label: 'Note outline',
+        detail: 'Jump to any heading in the active note.'
+      },
+      ...(canSwitchVaults
+        ? [
+            {
+              keyLabel: getKeymapDisplay(keymapOverrides, 'vim.leaderSwitchVault'),
+              label: 'Switch vault',
+              detail: 'Open the command palette vault switcher for local and remote vaults.'
+            }
+          ]
+        : []),
+      {
+        keyLabel: getKeymapDisplay(keymapOverrides, 'vim.leaderQuickCapture'),
+        label: 'Quick capture',
+        detail: 'Open the floating capture window.'
+      },
+      {
+        keyLabel: getKeymapDisplay(keymapOverrides, 'vim.leaderTemplatePicker'),
+        label: 'New from template',
+        detail: 'Create a note from a built-in or custom template.'
+      },
+      {
+        keyLabel: getKeymapDisplay(keymapOverrides, 'vim.leaderInsertTemplate'),
+        label: 'Insert template into note',
+        detail: 'Render a template into the current note.'
+      },
+      {
+        keyLabel: getKeymapDisplay(keymapOverrides, 'vim.leaderDailyNote'),
+        label: "Today's daily note",
+        detail: 'Open or create the daily note for today.'
+      },
+      {
+        keyLabel: getKeymapDisplay(keymapOverrides, 'vim.leaderWeeklyNote'),
+        label: "This week's note",
+        detail: 'Open or create the weekly note for this week.'
+      },
+      {
+        keyLabel: getKeymapDisplay(keymapOverrides, 'vim.leaderMonthlyNote'),
+        label: "This month's note",
+        detail: 'Open or create the monthly note for this month.'
+      },
+      ...(calendarToggleAvailable
+        ? [
+            {
+              keyLabel: getKeymapDisplay(keymapOverrides, 'vim.leaderCalendar'),
+              label: 'Toggle calendar',
+              detail: 'Show or hide the calendar for the active daily/weekly note.'
+            }
+          ]
+        : [])
+    ]
+    if (whichKeyState.allowEditorActions) {
+      items.push({
+        keyLabel: getKeymapDisplay(keymapOverrides, 'vim.leaderNoteActions'),
+        label: 'Note actions',
+        detail: 'Open the note-local leader group. `f` formats the current note.'
+      })
+    }
+    return items
+  })()
+
+  useEffect(() => {
+    if (vimMode) return
+    ctrlWPending.current = false
+    jumpTopPending.current = 0
+    previousBufferPending.current = 0
+    nextBufferPending.current = 0
+    if (ctrlWTimer.current) clearTimeout(ctrlWTimer.current)
+    if (jumpTopTimer.current) clearTimeout(jumpTopTimer.current)
+    if (previousBufferTimer.current) clearTimeout(previousBufferTimer.current)
+    if (nextBufferTimer.current) clearTimeout(nextBufferTimer.current)
+    if (leaderTimer.current) clearTimeout(leaderTimer.current)
+    resetLeader()
+    setHint(false)
+  }, [resetLeader, setHint, vimMode])
+
+  useEffect(() => {
+    if (!vimMode) return
+    const handler = (e: KeyboardEvent): void => {
+      const state = useStore.getState()
+      const overrides = state.keymapOverrides
+      const leaderToken = getSequenceTokens(overrides, 'vim.leaderPrefix')[0] ?? 'Space'
+      const panePrefixToken = getSequenceTokens(overrides, 'vim.panePrefix')[0] ?? 'Ctrl+W'
+
+      // Skip when modals / overlays are open
+      if (
+        state.searchOpen ||
+        state.vaultTextSearchOpen ||
+        state.settingsOpen ||
+        state.commandPaletteOpen ||
+        state.bufferPaletteOpen
+      ) return
+      if (
+        document.querySelector('[data-ctx-menu]') ||
+        document.querySelector('[data-prompt-modal]') ||
+        document.querySelector('[data-confirm-modal]') ||
+        // The workflow import review focuses a BUTTON, not a text field, so
+        // the INPUT/TEXTAREA escape below does not cover it: without this
+        // marker, Space armed the leader instead of pressing the focused
+        // button and leader chords fired underneath the dialog.
+        document.querySelector('[data-workflow-import]')
+      ) return
+
+      // Hint mode — handled entirely by HintOverlay's own listener
+      if (hintRef.current) return
+
+      // `e.target` is only an HTMLElement for real DOM-dispatched events.
+      // Synthetic events fired at `window`/`document` (e.g. programmatic
+      // shortcuts) have a non-Element target, so narrow with `instanceof`
+      // before touching Element-only methods like `.closest()`.
+      const target = e.target instanceof HTMLElement ? e.target : null
+      const tag = target?.tagName
+      // Never steal keys from normal text-entry fields such as the
+      // inline note title, prompt inputs, or textarea-based controls.
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return
+      // The selection format toolbar handles its own keyboard navigation
+      // (arrows / Enter / Esc) once focused — yield to it entirely.
+      if (target?.closest('[data-selection-toolbar]')) return
+      // The home view owns its own roving-focus navigation (↑/↓/j/k/Enter), but
+      // it does not handle the leader key — so the leader (and any pending leader
+      // sequence) must fall through to VimNav, or Space-as-leader is swallowed
+      // while the home view is focused (no note open). (#273)
+      if (
+        shouldYieldToHomeNav(
+          target,
+          sequenceTokenFromEvent(e) === leaderToken,
+          !!leaderPending.current
+        )
+      ) {
+        return
+      }
+      // Yield to any surface that runs its own keyboard. See
+      // SELF_KEYED_SURFACES for the list and why it is one list.
+      if (
+        target?.closest(SELF_KEYED_SURFACES) &&
+        !ctrlWPending.current &&
+        sequenceTokenFromEvent(e) !== panePrefixToken
+      ) {
+        return
+      }
+      // A WYSIWYG table cell in INSERT mode (contenteditable) is a real text
+      // field, even though it lives inside CodeMirror. Its keys — including
+      // Space — must type into the cell, not arm the leader or fire global
+      // bindings; the cell's own handler owns Esc and the insert-escape. (#340)
+      if (target?.closest('.cm-table-cell')?.getAttribute('contenteditable') === 'true') {
+        return
+      }
+      // CodeMirror's editor surface is contenteditable; keep global
+      // hint/navigation bindings working there. Only skip other
+      // unrelated contenteditable widgets.
+      if (
+        target?.isContentEditable &&
+        (!state.editorViewRef || !state.editorViewRef.dom.contains(target))
+      ) {
+        return
+      }
+      // #285: when focus is inside the calendar panel, stand down so it owns its
+      // keys (h/j/k/l + arrows for day navigation, Escape to leave) via its own
+      // focus-gated capture handler. We don't consume the event, so the panel's
+      // handler (and any global app shortcut) still sees it.
+      // #374: EXCEPT the pane prefix (Ctrl+W) and its pending direction — mirror
+      // the database-grid hand-off above — so Vim pane navigation still works
+      // from the calendar (Ctrl+W h/j/k/l) instead of forcing a mouse click.
+      const calendarPanelEl = document.querySelector('[data-calendar-panel]')
+      if (
+        calendarPanelEl &&
+        target &&
+        calendarPanelEl.contains(target) &&
+        !ctrlWPending.current &&
+        sequenceTokenFromEvent(e) !== panePrefixToken
+      ) {
+        return
+      }
+      // #309: In an Excalidraw canvas, hold-Space pans (the Hand tool). Don't
+      // swallow the Space keydown as the leader — let it reach Excalidraw so
+      // panning works, and arm the leader only on a quick TAP (see the keyup
+      // handler). Record the press time here and yield; other keys fall through
+      // to normal routing. Skip while a leader sequence is already pending so its
+      // follow-up key still routes as a leader command.
+      if (
+        sequenceTokenFromEvent(e) === leaderToken &&
+        !leaderPending.current &&
+        target?.closest('[data-excalidraw-view]')
+      ) {
+        if (!e.repeat) excalidrawSpaceDownAt.current = Date.now()
+        return
+      }
+      const previewEl = getPreviewScrollElement()
+      const hoverPreviewEl = getHoverPreviewScrollElement()
+
+      // Vim jumplist navigation (Ctrl+O back / Ctrl+I forward) is checked BEFORE
+      // the inline-format shortcuts below: on Linux/Windows `Mod` is Ctrl, so
+      // Vim's forward binding (Ctrl+I) collides with the italic shortcut (Mod+I).
+      // In Vim normal mode the jumplist must win; in insert mode (or with Vim
+      // off) Ctrl+I falls through to italic. (#373)
+      //
+      // Visual mode sides with italic: a selection is standing and every other
+      // format chord (Mod+B and friends) already applies to it, so having this
+      // one jump to another note instead — discarding the selection — was the
+      // odd one out. Ctrl+O keeps its jumplist meaning in visual mode; only the
+      // chord that collides with a format shortcut yields. (#488)
+      const wantsJumpBack = matchesSequenceToken(e, overrides, 'vim.historyBack')
+      const wantsJumpForward = matchesSequenceToken(e, overrides, 'vim.historyForward')
+      if (
+        (wantsJumpBack || wantsJumpForward) &&
+        jumplistKeepsChord({
+          vimMode: state.vimMode,
+          insertMode: isEditorInsertMode(state.editorViewRef, state.vimMode),
+          visualMode: isEditorVisualMode(state.editorViewRef, state.vimMode),
+          chordIsFormatShortcut: matchesShortcutBinding(e, 'Mod+I')
+        })
+      ) {
+        e.preventDefault()
+        e.stopImmediatePropagation()
+        jumpNoteHistory(wantsJumpBack ? 'back' : 'forward')
+        return
+      }
+
+      // Inline-format shortcuts (Bold/Italic/Strike/Highlight/Code/Math/Link)
+      // mirror the selection toolbar. Handled here — in the window capture
+      // handler — so they work on every platform and beat Vim's own Ctrl
+      // chords (e.g. <C-b>) in normal/visual mode on Linux/Windows. `Mod`
+      // resolves to ⌘ on macOS and Ctrl elsewhere.
+      // While an autocomplete menu is open (slash commands, @ dates, [[ links,
+      // template variables), its own Ctrl-based navigation owns these chords —
+      // e.g. Ctrl+K moves the selection up rather than "insert link". Defer the
+      // inline-format shortcuts to the completion handler so they can't hijack
+      // the open menu. (#337)
+      const fmtView = state.editorViewRef
+      if (fmtView && isEditorFocused(fmtView) && completionStatus(fmtView.state) !== 'active') {
+        // Focus the selection toolbar (when shown) for keyboard navigation.
+        if (matchesShortcutBinding(e, 'Mod+/')) {
+          const firstItem = document.querySelector<HTMLElement>(
+            '[data-selection-toolbar] [data-toolbar-item]'
+          )
+          if (firstItem) {
+            e.preventDefault()
+            e.stopImmediatePropagation()
+            firstItem.focus()
+            return
+          }
+        }
+        // Bindings in canonical modifier order (Shift before Mod), matching
+        // `normalizeShortcutBinding` so `matchesShortcutBinding` compares equal.
+        const formats: Array<[string, () => void]> = [
+          ['Mod+B', () => toggleWrap(fmtView, '**')],
+          ['Mod+I', () => toggleWrap(fmtView, '*')],
+          ['Mod+E', () => toggleWrap(fmtView, '`')],
+          ['Shift+Mod+S', () => toggleWrap(fmtView, '~~')],
+          ['Shift+Mod+H', () => toggleWrap(fmtView, '==')],
+          ['Shift+Mod+M', () => toggleWrap(fmtView, '$')],
+          ['Mod+K', () => wrapLink(fmtView)]
+        ]
+        for (const [binding, run] of formats) {
+          if (matchesShortcutBinding(e, binding)) {
+            e.preventDefault()
+            e.stopImmediatePropagation()
+            run()
+            return
+          }
+        }
+      }
+
+      // Buffer and tab sequences as a GLOBAL fallback: they exist for when
+      // focus sits anywhere but the editor (#321). A focused editor has
+      // codemirror-vim, which carries `[b`/`]b` and `gt`/`gT` of its own, so
+      // this layer must not touch its keys. Consuming the first key here meant
+      // no Vim sequence beginning with `[` or `]` could ever run: `]]` and
+      // `[[` were swallowed before Vim saw either press (#578). The same
+      // problem was already visible for a pending argument (`f[` finding a
+      // bracket) and patched narrowly then; standing down for the whole
+      // focused editor is the rule that covers both.
+      // The Atlas map owns `[` and `]` for region jumps whenever it holds the
+      // keyboard, which is true straight after Leader+g, before any element
+      // inside it has DOM focus; keying the yield off `document.activeElement`
+      // alone ate the first bracket as a buffer-sequence prefix (#670).
+      const atlasOwnsBrackets = atlasHoldsKeyboard(
+        state.focusedPanel,
+        isAtlasViewActive(state)
+      )
+      if (
+        !leaderPending.current &&
+        !isEditorFocused(state.editorViewRef) &&
+        !atlasOwnsBrackets
+      ) {
+        const consumeBufferKey = (): void => {
+          e.preventDefault()
+          e.stopImmediatePropagation()
+        }
+        // A vim-style count prefix for the sequences below ({count}[b walks
+        // back count tabs). Digits are recorded without being consumed, so
+        // anything else digits mean elsewhere still works; a completed
+        // sequence spends the count, and it expires quickly on its own. A
+        // leading 0 never starts a count, matching vim. (#622)
+        if (
+          /^[0-9]$/.test(e.key) &&
+          !e.metaKey &&
+          !e.ctrlKey &&
+          !e.altKey &&
+          (bufferCount.current !== null || e.key !== '0')
+        ) {
+          const now = Date.now()
+          const prev =
+            bufferCount.current && now - bufferCount.current.at < 1500
+              ? bufferCount.current.n
+              : 0
+          bufferCount.current = { n: Math.min(99, prev * 10 + Number(e.key)), at: now }
+        }
+        const takeBufferCount = (): number => {
+          const entry = bufferCount.current
+          bufferCount.current = null
+          if (!entry || Date.now() - entry.at > 1500) return 1
+          return Math.max(1, entry.n)
+        }
+        if (
+          advanceSequence(
+            e,
+            getKeymapBinding(overrides, 'vim.bufferPrevious'),
+            previousBufferPending,
+            previousBufferTimer,
+            () => navigateBuffer(-takeBufferCount()),
+            consumeBufferKey
+          )
+        ) {
+          return
+        }
+        if (
+          advanceSequence(
+            e,
+            getKeymapBinding(overrides, 'vim.bufferNext'),
+            nextBufferPending,
+            nextBufferTimer,
+            () => navigateBuffer(takeBufferCount()),
+            consumeBufferKey
+          )
+        ) {
+          return
+        }
+
+        // #321: gt/gT global fallback (they only fired inside the focused editor
+        // before). `g` is a shared prefix (gg/gd), so advanceSequence can't be used
+        // — it would consume `g`. Arm on `g` WITHOUT consuming it (so gg still
+        // resolves downstream), then act on the following t/T.
+        const gTabTokens = getSequenceTokens(overrides, 'vim.tabNext')
+        const gPrevTokens = getSequenceTokens(overrides, 'vim.tabPrevious')
+        const gTok = sequenceTokenFromEvent(e)
+        const inExcalidrawView = !!target?.closest('[data-excalidraw-view]')
+        if (gTabPending.current) {
+          // Shift is delivered as its own keydown before `T`; keep the pending
+          // `g` prefix alive so Excalidraw can complete Vim-style `gT`.
+          if (!gTok) return
+          gTabPending.current = false
+          if (gTabTimer.current) clearTimeout(gTabTimer.current)
+          if (gTabTokens.length === 2 && gTok === gTabTokens[1]) {
+            e.preventDefault()
+            e.stopImmediatePropagation()
+            navigateBuffer(1)
+            return
+          }
+          if (gPrevTokens.length === 2 && gTok === gPrevTokens[1]) {
+            e.preventDefault()
+            e.stopImmediatePropagation()
+            navigateBuffer(-1)
+            return
+          }
+          // Not a tab completion (e.g. gg, gd): fall through without consuming.
+        }
+        const startsTabSequence =
+          !!gTok &&
+          ((gTabTokens.length === 2 && gTok === gTabTokens[0]) ||
+            (gPrevTokens.length === 2 && gTok === gPrevTokens[0]))
+        if (startsTabSequence) {
+          gTabPending.current = true
+          if (gTabTimer.current) clearTimeout(gTabTimer.current)
+          gTabTimer.current = setTimeout(() => {
+            gTabPending.current = false
+          }, 500)
+          if (inExcalidrawView) {
+            e.preventDefault()
+            e.stopImmediatePropagation()
+            return
+          }
+        }
+      }
+
+      // ------- Ctrl+w pending → resolve panel / pane switch ------------
+      if (ctrlWPending.current) {
+        e.preventDefault()
+        e.stopImmediatePropagation()
+        ctrlWPending.current = false
+        if (ctrlWTimer.current) clearTimeout(ctrlWTimer.current)
+        clearEditorPendingVimStatus(state.editorViewRef)
+        const editorHasFocus = isEditorFocused(state.editorViewRef)
+
+        // <C-w>v / <C-w>s → vim-style splits. Clones the active pane's
+        // current tab into a new pane. Works for any tab, including the
+        // virtual Tasks tab (no CM editor required to fire `:vs`/`:sp`).
+        if (
+          matchesSequenceToken(e, overrides, 'vim.paneSplitRight') ||
+          matchesSequenceToken(e, overrides, 'vim.paneSplitDown')
+        ) {
+          const activePath = state.selectedPath
+          if (activePath) {
+            void state.splitPaneWithTab({
+              targetPaneId: state.activePaneId,
+              edge: matchesSequenceToken(e, overrides, 'vim.paneSplitRight') ? 'right' : 'bottom',
+              path: activePath
+            })
+          }
+          return
+        }
+
+        // <C-w>c / <C-w>q → close the active tab (vim window-close), so closing is
+        // reliable under the same prefix as pane nav rather than depending on a
+        // platform-specific Ctrl+W that also means "close" only on Linux/Win. (#321)
+        if ((e.key === 'c' || e.key === 'q') && !e.ctrlKey && !e.metaKey && !e.altKey) {
+          void state.closeActiveNote()
+          return
+        }
+
+        // When focus is in the editor and we have multiple panes in the
+        // split tree, try pane-internal navigation first. If a neighbor
+        // pane exists in the requested direction, jump to it and stop.
+        // Falling through to panel nav only happens at the tree edge.
+        const paneDir =
+          matchesSequenceToken(e, overrides, 'vim.paneFocusLeft') || e.key === 'ArrowLeft'
+            ? 'h'
+            : matchesSequenceToken(e, overrides, 'vim.paneFocusRight') || e.key === 'ArrowRight'
+              ? 'l'
+              : matchesSequenceToken(e, overrides, 'vim.paneFocusDown') || e.key === 'ArrowDown'
+                ? 'j'
+                : matchesSequenceToken(e, overrides, 'vim.paneFocusUp') || e.key === 'ArrowUp'
+                  ? 'k'
+                  : null
+        if (
+          paneDir === 'k' &&
+          (editorHasFocus ||
+            state.focusedPanel === 'editor' ||
+            state.focusedPanel === null) &&
+          focusTabs()
+        ) {
+          return
+        }
+
+        if (paneDir === 'j' && state.focusedPanel === 'tabs') {
+          focusEditor()
+          return
+        }
+
+        if (
+          paneDir &&
+          (editorHasFocus ||
+            state.focusedPanel === 'editor' ||
+            state.focusedPanel === 'tabs' ||
+            state.focusedPanel === null) &&
+          focusPaneInDirection(paneDir)
+        ) {
+          return
+        }
+
+        const panels = getVisiblePanelsNow({
+          sidebarOpen: state.sidebarOpen,
+          noteListOpen: state.noteListOpen,
+          unifiedSidebar: state.unifiedSidebar,
+          tasksViewOpen: isTasksViewActive(state),
+          atlasViewOpen: isAtlasViewActive(state)
+        })
+        const direction =
+          matchesSequenceToken(e, overrides, 'vim.paneFocusLeft') ||
+          matchesSequenceToken(e, overrides, 'vim.paneFocusUp') ||
+          e.key === 'ArrowLeft' ||
+          e.key === 'ArrowUp'
+            ? 'left'
+            : matchesSequenceToken(e, overrides, 'vim.paneFocusRight') ||
+                matchesSequenceToken(e, overrides, 'vim.paneFocusDown') ||
+                e.key === 'ArrowRight' ||
+                e.key === 'ArrowDown'
+              ? 'right'
+              : null
+        const currentPanel = editorHasFocus
+          ? 'editor'
+          : state.focusedPanel === 'tabs'
+            ? 'editor'
+          : state.focusedPanel === 'hoverpreview'
+            ? 'connections'
+            : state.focusedPanel
+        const next = direction ? resolveNextPanel(currentPanel, direction, panels) : null
+        if (!next) return
+
+        // Focusing is shared with the always-on `Alt+hjkl` path so both walk the
+        // same panels and land the same way. (#477)
+        focusPanel(next, direction === 'left' ? 'h' : 'l')
+        return
+      }
+
+      // ------- Ctrl+w initiation ----------------------------------------
+      if (sequenceTokenFromEvent(e) === panePrefixToken) {
+        if (isEditorFocused(state.editorViewRef) && isEditorInsertMode(state.editorViewRef, state.vimMode)) return
+        e.preventDefault()
+        e.stopImmediatePropagation()
+        if (isEditorFocused(state.editorViewRef)) state.setFocusedPanel('editor')
+        clearEditorPendingVimStatus(state.editorViewRef)
+        ctrlWPending.current = true
+        if (ctrlWTimer.current) clearTimeout(ctrlWTimer.current)
+        ctrlWTimer.current = setTimeout(() => {
+          ctrlWPending.current = false
+          clearEditorPendingVimStatus(useStore.getState().editorViewRef)
+        }, 800)
+        return
+      }
+
+      // #321: OS key auto-repeat of a held leader key (Space) must not read as a
+      // second leader press, which cancels the armed leader so <leader>h and the
+      // rest silently do nothing. Swallow the repeat and keep the leader armed.
+      // (Mirrors the !e.repeat guard on the Excalidraw arm path.)
+      if (e.repeat && leaderPending.current && sequenceTokenFromEvent(e) === leaderToken) {
+        e.preventDefault()
+        e.stopImmediatePropagation()
+        return
+      }
+
+      // Cancel a pending leader sequence on Escape.
+      if (leaderPending.current && e.key === 'Escape') {
+        e.preventDefault()
+        e.stopImmediatePropagation()
+        resetLeader()
+        return
+      }
+      // A second press of the leader key is NOT cancelled here: it falls through
+      // to the pending-sequence blocks below so a <leader><leader> binding can
+      // fire when the leader is also the second key (e.g. Space Space). (#338)
+      // Remember that a leader was pending — an UNBOUND second leader press
+      // reaches the arm logic below, where it must dismiss the which-key rather
+      // than arm a fresh one.
+      const leaderWasPending = !!leaderPending.current
+      // ------- Tasks / Tag view active → defer to its own window handler
+      // Both panels install capture-phase window keydowns that handle
+      // j/k/gg/G/Enter/x/Esc/etc. themselves, so we bail and let them — with
+      // one exception: leader input. The leader (Space) and any in-progress
+      // leader sequence fall through to the leader logic below so <leader>h
+      // (hint mode) and every other leader command work in these panels too.
+      // VimNav consumes the leader keypress before TasksView sees it, so the
+      // leader no longer collides with Space-to-toggle. (#151)
+      const panelViewActive =
+        isTasksViewActive(state) || isTagsViewActive(state) || isAtlasViewActive(state)
+      // Only defer while that view actually holds keyboard focus. After pane
+      // navigation moves focus to another panel (e.g. Ctrl+W h → sidebar), the
+      // Tasks/Tags tab is still "active" but focusedPanel is no longer
+      // 'tasks'/'tags' — so we must NOT bail here, or the target panel's keys
+      // (sidebar j/k) would be handled by nobody (the view now releases them
+      // too). A null panel means "no explicit focus yet", so keep deferring. (#412)
+      const panelViewFocused =
+        state.focusedPanel == null ||
+        state.focusedPanel === 'tasks' ||
+        state.focusedPanel === 'tags' ||
+        state.focusedPanel === 'atlas'
+      if (
+        panelViewActive &&
+        panelViewFocused &&
+        !leaderPending.current &&
+        sequenceTokenFromEvent(e) !== leaderToken
+      ) {
+        return
+      }
+
+      // ------- Global leader handling -----------------------------------
+      // Runs before per-panel routing so <Space>-prefixed shortcuts work
+      // from any focus context (sidebar, note list, editor, …). Editor-
+      // specific leader chains (leader-l-f for format) still require an
+      // editor in normal mode; the others are purely UI actions.
+      const editorNormalMode =
+        isEditorFocused(state.editorViewRef) &&
+        !isEditorInsertMode(state.editorViewRef, state.vimMode)
+      const editorInsertMode =
+        isEditorFocused(state.editorViewRef) &&
+        isEditorInsertMode(state.editorViewRef, state.vimMode)
+
+      if (leaderPending.current === 'leader') {
+        if (matchesSequenceToken(e, overrides, 'vim.leaderSearchGroup')) {
+          e.preventDefault()
+          e.stopImmediatePropagation()
+          armLeader('leader-s', editorNormalMode)
+          return
+        }
+        if (matchesSequenceToken(e, overrides, 'vim.leaderSearchNotes')) {
+          e.preventDefault()
+          e.stopImmediatePropagation()
+          resetLeader()
+          state.setSearchOpen(true)
+          return
+        }
+        if (matchesSequenceToken(e, overrides, 'vim.leaderOpenBuffers')) {
+          e.preventDefault()
+          e.stopImmediatePropagation()
+          resetLeader()
+          state.setBufferPaletteOpen(true)
+          return
+        }
+        // Skipped outright when Workflows is off, so the key falls through as
+        // an unbound leader press instead of arming a dead view.
+        if (state.atlasEnabled && matchesSequenceToken(e, overrides, 'vim.leaderAtlas')) {
+          e.preventDefault()
+          e.stopImmediatePropagation()
+          resetLeader()
+          void state.openAtlasView()
+          return
+        }
+        if (state.workflowsEnabled && matchesSequenceToken(e, overrides, 'vim.leaderWorkflows')) {
+          e.preventDefault()
+          e.stopImmediatePropagation()
+          resetLeader()
+          void state.openWorkflowsView()
+          return
+        }
+        if (matchesSequenceToken(e, overrides, 'vim.hintMode')) {
+          e.preventDefault()
+          e.stopImmediatePropagation()
+          resetLeader()
+          setHint(true)
+          return
+        }
+        if (matchesSequenceToken(e, overrides, 'vim.leaderToggleSidebar')) {
+          e.preventDefault()
+          e.stopImmediatePropagation()
+          resetLeader()
+          state.toggleSidebar()
+          return
+        }
+        if (matchesSequenceToken(e, overrides, 'vim.leaderNoteOutline')) {
+          e.preventDefault()
+          e.stopImmediatePropagation()
+          resetLeader()
+          state.setOutlinePaletteOpen(true)
+          return
+        }
+        if (canSwitchVaults && matchesSequenceToken(e, overrides, 'vim.leaderSwitchVault')) {
+          e.preventDefault()
+          e.stopImmediatePropagation()
+          resetLeader()
+          state.setCommandPaletteOpen(true, 'vault')
+          return
+        }
+        if (matchesSequenceToken(e, overrides, 'vim.leaderNoteActions') && editorNormalMode) {
+          e.preventDefault()
+          e.stopImmediatePropagation()
+          armLeader('leader-l', true)
+          return
+        }
+        if (matchesSequenceToken(e, overrides, 'vim.leaderQuickCapture')) {
+          e.preventDefault()
+          e.stopImmediatePropagation()
+          resetLeader()
+          void window.zen.toggleQuickCapture()
+          return
+        }
+        if (matchesSequenceToken(e, overrides, 'vim.leaderTemplatePicker')) {
+          e.preventDefault()
+          e.stopImmediatePropagation()
+          resetLeader()
+          state.setTemplatePaletteOpen(true)
+          return
+        }
+        if (matchesSequenceToken(e, overrides, 'vim.leaderInsertTemplate')) {
+          e.preventDefault()
+          e.stopImmediatePropagation()
+          resetLeader()
+          state.openTemplatePaletteForInsert()
+          return
+        }
+        if (matchesSequenceToken(e, overrides, 'vim.leaderDailyNote')) {
+          e.preventDefault()
+          e.stopImmediatePropagation()
+          resetLeader()
+          void state.openTodayDailyNote()
+          return
+        }
+        if (matchesSequenceToken(e, overrides, 'vim.leaderWeeklyNote')) {
+          e.preventDefault()
+          e.stopImmediatePropagation()
+          resetLeader()
+          void state.openThisWeekWeeklyNote()
+          return
+        }
+        if (matchesSequenceToken(e, overrides, 'vim.leaderMonthlyNote')) {
+          e.preventDefault()
+          e.stopImmediatePropagation()
+          resetLeader()
+          void state.openThisMonthMonthlyNote()
+          return
+        }
+        if (matchesSequenceToken(e, overrides, 'vim.leaderCalendar')) {
+          e.preventDefault()
+          e.stopImmediatePropagation()
+          resetLeader()
+          // The calendar can't render without a note in the pane (Tasks/Tags,
+          // Quick Notes), so pressing it there just dismisses the leader hint
+          // rather than silently doing nothing or leaking to another binding. (#413)
+          if (isCalendarToggleAvailable(state.vaultSettings, state.activeNote)) {
+            // If the calendar is opening (not already shown), move focus into it
+            // once it mounts — the CalendarPanel focuses itself when it sees
+            // focusedPanel === 'calendar'. If it's closing, leave focus alone. (#285)
+            const wasOpen = document.querySelector('[data-calendar-panel]') !== null
+            window.dispatchEvent(new Event('zen:toggle-calendar'))
+            if (!wasOpen) state.setFocusedPanel('calendar')
+          }
+          return
+        }
+        // Any other key cancels leader and falls through to normal routing.
+        resetLeader()
+      }
+
+      if (leaderPending.current === 'leader-l') {
+        if (matchesSequenceToken(e, overrides, 'vim.leaderFormatNote') && editorNormalMode) {
+          e.preventDefault()
+          e.stopImmediatePropagation()
+          resetLeader()
+          void state.formatActiveNote()
+          return
+        }
+        if (matchesSequenceToken(e, overrides, 'vim.leaderCopyMarkdown')) {
+          e.preventDefault()
+          e.stopImmediatePropagation()
+          resetLeader()
+          void state.copyActiveNoteAsMarkdown()
+          return
+        }
+        if (matchesSequenceToken(e, overrides, 'vim.leaderToggleFavorite')) {
+          e.preventDefault()
+          e.stopImmediatePropagation()
+          resetLeader()
+          void state.toggleFavoriteActiveNote()
+          return
+        }
+        resetLeader()
+      }
+
+      if (leaderPending.current === 'leader-s') {
+        if (matchesSequenceToken(e, overrides, 'vim.leaderSearchVaultText')) {
+          e.preventDefault()
+          e.stopImmediatePropagation()
+          resetLeader()
+          state.setVaultTextSearchOpen(true)
+          return
+        }
+        resetLeader()
+      }
+
+      // In the tasks/tags panels, only leader input is handled above; hand
+      // every other key (including a just-reset leader sequence) back to the
+      // panel's own capture handler — but only while that view actually holds
+      // keyboard focus. Once pane navigation moves focus to another panel
+      // (e.g. Ctrl+W h → sidebar), fall through so the sidebar/etc. handlers
+      // below run instead of the keys going to nobody. (#151, #412)
+      if (panelViewActive && panelViewFocused && sequenceTokenFromEvent(e) !== leaderToken) {
+        return
+      }
+
+      // #338: an unbound second leader press — a leader sequence was pending and
+      // no binding above consumed this key — dismisses the pending which-key
+      // rather than arming a new one. (A <leader><leader> binding is handled by
+      // the pending-sequence blocks above, which return before reaching here.)
+      if (leaderWasPending && sequenceTokenFromEvent(e) === leaderToken) {
+        e.preventDefault()
+        e.stopImmediatePropagation()
+        return
+      }
+      if (
+        sequenceTokenFromEvent(e) === leaderToken &&
+        !editorInsertMode &&
+        // While Vim is mid-command in the focused editor (e.g. after f/t/r or an
+        // operator), Space is the command's argument (r<Space>, f<Space>), not
+        // the leader — let it fall through to codemirror-vim. (#147)
+        !(isEditorFocused(state.editorViewRef) && isVimAwaitingArgument(state.editorViewRef))
+      ) {
+        const tag = (e.target as HTMLElement | null)?.tagName
+        if (tag !== 'INPUT' && tag !== 'TEXTAREA') {
+          e.preventDefault()
+          e.stopImmediatePropagation()
+          armLeader('leader', editorNormalMode)
+          return
+        }
+      }
+
+      // ------- Half-page scroll (universal) -----------------------------
+      // Ctrl+D / Ctrl+U scroll the visible preview regardless of which
+      // panel currently owns focus. Without this, clicking into the
+      // sidebar or note list would silently disable these Vim motions
+      // because the panel-specific handlers below don\u2019t know about
+      // them. Exceptions: don\u2019t hijack when the user is typing in
+      // an input/textarea, when the editor is in insert mode, or when
+      // a leader sequence is pending.
+      {
+        const wantsHalf =
+          matchesSequenceToken(e, overrides, 'nav.halfPageDown') ||
+          matchesSequenceToken(e, overrides, 'nav.halfPageUp')
+        // #321: when the editor is focused (e.g. Split mode, with a preview also
+        // on screen), let its own Vim Ctrl+D/Ctrl+U half-page mapping run instead
+        // of stealing the key to scroll the preview.
+        if (
+          wantsHalf &&
+          previewEl &&
+          !leaderPending.current &&
+          !editorInsertMode &&
+          !isEditorFocused(state.editorViewRef)
+        ) {
+          const tag = (e.target as HTMLElement | null)?.tagName
+          if (tag !== 'INPUT' && tag !== 'TEXTAREA') {
+            e.preventDefault()
+            e.stopImmediatePropagation()
+            const step = getPreviewPageStep(previewEl)
+            const down = matchesSequenceToken(e, overrides, 'nav.halfPageDown')
+            scrollPreviewBy(previewEl, down ? step : -step)
+            return
+          }
+        }
+      }
+
+      // A pending Vim sequence owns the next character: after `f`/`t`/`r` (or
+      // a count or register prefix), `m` is the operand, not the menu key.
+      // This runs on window capture, so without the guard Vim never even saw
+      // the key and the orphaned motion swallowed the next one (#568). The
+      // native context-menu key is not a character and stays available.
+      const wantsEditorTextContextMenu =
+        isEditorFocused(state.editorViewRef) &&
+        !editorInsertMode &&
+        !state.editorViewRef?.state.selection.main.empty &&
+        ((matchesSequenceToken(e, overrides, 'nav.contextMenu') &&
+          !isVimAwaitingArgument(state.editorViewRef)) ||
+          wantsNativeContextMenuKey(e))
+      if (wantsEditorTextContextMenu) {
+        e.preventDefault()
+        e.stopImmediatePropagation()
+        window.dispatchEvent(new Event(ZEN_OPEN_EDITOR_CONTEXT_MENU_EVENT))
+        return
+      }
+
+      // A focused breadcrumb folder crumb (e.g. reached via hint mode) owns the
+      // context-menu key — open *its* create menu, not the sidebar item's.
+      {
+        const activeCrumb = document.activeElement as HTMLElement | null
+        if (
+          activeCrumb?.hasAttribute('data-crumb-menu') &&
+          (matchesSequenceToken(e, overrides, 'nav.contextMenu') || wantsNativeContextMenuKey(e))
+        ) {
+          e.preventDefault()
+          e.stopImmediatePropagation()
+          const rect = activeCrumb.getBoundingClientRect()
+          activeCrumb.dispatchEvent(
+            new MouseEvent('contextmenu', {
+              bubbles: true,
+              cancelable: true,
+              clientX: Math.round(rect.left),
+              clientY: Math.round(rect.bottom + 2)
+            })
+          )
+          return
+        }
+      }
+
+      // ------- Sidebar navigation (explicit) -----------------------------
+      // When focusedPanel is 'sidebar', always handle here — even if the
+      // editor still holds stale DOM focus from a previous interaction.
+      if (state.focusedPanel === 'sidebar') {
+        handleSidebarKey(e, state)
+        return
+      }
+
+      if (state.focusedPanel === 'connections') {
+        handleConnectionsKey(e, state)
+        return
+      }
+
+      if (state.focusedPanel === 'comments') {
+        handleCommentsKey(e, state)
+        return
+      }
+
+      if (state.focusedPanel === 'outline') {
+        handleOutlineKey(e, state)
+        return
+      }
+
+      if (state.focusedPanel === 'tabs') {
+        handleTabsKey(e, state)
+        return
+      }
+
+      if (hoverPreviewEl && state.focusedPanel === 'hoverpreview') {
+        handleHoverPreviewKey(e, hoverPreviewEl, state)
+        return
+      }
+
+      // ------- Editor focused -------------------------------------------
+      if (isEditorFocused(state.editorViewRef)) {
+        if (isEditorInsertMode(state.editorViewRef, state.vimMode)) {
+          resetLeader()
+        }
+
+        const hasEditorSelection = !state.editorViewRef?.state.selection.main.empty
+        const wantsTextContextMenu =
+          hasEditorSelection &&
+          !isEditorInsertMode(state.editorViewRef, state.vimMode) &&
+          // Same #568 guard as above: a pending f/t/r owns the character.
+          ((matchesSequenceToken(e, overrides, 'nav.contextMenu') &&
+            !isVimAwaitingArgument(state.editorViewRef)) ||
+            wantsNativeContextMenuKey(e))
+        if (wantsTextContextMenu) {
+          e.preventDefault()
+          e.stopImmediatePropagation()
+          window.dispatchEvent(new Event(ZEN_OPEN_EDITOR_CONTEXT_MENU_EVENT))
+          return
+        }
+
+        if (wantsNativeContextMenuKey(e) && openActiveTabContextMenu(state)) {
+          e.preventDefault()
+          e.stopImmediatePropagation()
+          return
+        }
+
+        // `f` (and operator+motion sequences like df/cf/yf) are Vim find-char
+        // motions here — hint mode lives on the leader (<leader>h) so it never
+        // hijacks them. (#107)
+        return
+      }
+
+      resetLeader()
+
+      // ------- Preview navigation --------------------------------------
+      const wantsPreviewTabMenu =
+        wantsNativeContextMenuKey(e) &&
+        previewEl &&
+        isPreviewNavigationActive(previewEl, state, target)
+      if (wantsPreviewTabMenu && openActiveTabContextMenu(state)) {
+        e.preventDefault()
+        e.stopImmediatePropagation()
+        return
+      }
+
+      if (previewEl && isPreviewNavigationActive(previewEl, state, target)) {
+        handlePreviewKey(e, previewEl, state)
+        return
+      }
+
+      // ------- NoteList navigation --------------------------------------
+      if (state.focusedPanel === 'notelist') {
+        handleNoteListKey(e, state)
+        return
+      }
+
+      // ------- Sidebar navigation — editor doesn't have DOM focus, so
+      //         route to sidebar whenever it's open (regardless of
+      //         focusedPanel, which can get stale via focus events) --------
+      if (state.sidebarOpen) {
+        handleSidebarKey(e, state)
+        return
+      }
+
+    }
+
+    // #309: arm the leader on a quick Space TAP inside an Excalidraw canvas. The
+    // keydown was let through (above) so hold-Space pans; a fast release (under
+    // the tap window) means the user tapped rather than held, so enter leader
+    // mode. A longer hold was a pan and arms nothing.
+    const onKeyUp = (e: KeyboardEvent): void => {
+      if (excalidrawSpaceDownAt.current == null) return
+      const leaderToken =
+        getSequenceTokens(useStore.getState().keymapOverrides, 'vim.leaderPrefix')[0] ?? 'Space'
+      if (sequenceTokenFromEvent(e) !== leaderToken) return
+      const downAt = excalidrawSpaceDownAt.current
+      excalidrawSpaceDownAt.current = null
+      const target = e.target instanceof HTMLElement ? e.target : null
+      if (!target?.closest('[data-excalidraw-view]')) return
+      if (Date.now() - downAt < EXCALIDRAW_LEADER_TAP_MS) {
+        armLeader('leader', false)
+      }
+    }
+
+    window.addEventListener('keydown', handler, true)
+    window.addEventListener('keyup', onKeyUp, true)
+    return () => {
+      window.removeEventListener('keydown', handler, true)
+      window.removeEventListener('keyup', onKeyUp, true)
+      previousBufferPending.current = 0
+      nextBufferPending.current = 0
+      if (previousBufferTimer.current) clearTimeout(previousBufferTimer.current)
+      if (nextBufferTimer.current) clearTimeout(nextBufferTimer.current)
+      resetLeader()
+    }
+  }, [
+    armLeader,
+    jumpNoteHistory,
+    resetLeader,
+    setHint,
+    stickyWhichKeyHints,
+    vimMode,
+    whichKeyHintTimeoutMs
+  ]) // ← stable dep, handler never re-registers unnecessarily
+
+  // ---- Key handlers (called from the single persistent handler) --------
+
+  function handleSidebarKey(e: KeyboardEvent, state: ReturnType<typeof useStore.getState>): void {
+    const key = e.key
+    const overrides = state.keymapOverrides
+    if (state.focusedPanel !== 'sidebar') state.setFocusedPanel('sidebar')
+    const items = getIndexedElements('[data-sidebar-idx]', 'sidebarIdx')
+    const count = items.length
+    const max = count - 1
+    const currentPos = findPositionByIndex(items, 'sidebarIdx', state.sidebarCursorIndex)
+    const wantsContextMenu =
+      matchesSequenceToken(e, overrides, 'nav.contextMenu') ||
+      key === 'ContextMenu' ||
+      (e.shiftKey && key === 'F10')
+
+    // Always consume single-char nav keys when sidebar is focused,
+    // even if the sidebar is empty — prevents them leaking to the editor.
+    const wantsHandledKey =
+      matchesSequenceToken(e, overrides, 'nav.moveDown') ||
+      matchesSequenceToken(e, overrides, 'nav.moveUp') ||
+      matchesSequenceToken(e, overrides, 'nav.jumpBottom') ||
+      sequenceTokenFromEvent(e) === getSequenceTokens(overrides, 'nav.jumpTop')[0] ||
+      matchesSequenceToken(e, overrides, 'nav.openSideItem') ||
+      matchesSequenceToken(e, overrides, 'nav.back') ||
+      matchesSequenceToken(e, overrides, 'nav.toggleFolder') ||
+      matchesSequenceToken(e, overrides, 'nav.filter') ||
+      key === 'Enter' ||
+      key === 'Escape' ||
+      key === 'ArrowDown' ||
+      key === 'ArrowUp' ||
+      key === 'ArrowLeft' ||
+      key === 'ArrowRight' ||
+      wantsContextMenu
+    if (wantsHandledKey) {
+      e.preventDefault()
+      e.stopImmediatePropagation()
+    } else {
+      return // not a nav key, let it through
+    }
+
+    if (count === 0) return // nothing to navigate
+
+    if (matchesSequenceToken(e, overrides, 'nav.moveDown') || key === 'ArrowDown') {
+      scrollToIndexedElement(items[Math.min(currentPos + 1, max)], 'sidebarIdx', state.setSidebarCursorIndex)
+      return
+    }
+    if (matchesSequenceToken(e, overrides, 'nav.moveUp') || key === 'ArrowUp') {
+      scrollToIndexedElement(items[Math.max(currentPos - 1, 0)], 'sidebarIdx', state.setSidebarCursorIndex)
+      return
+    }
+    if (matchesSequenceToken(e, overrides, 'nav.jumpBottom')) {
+      scrollToIndexedElement(items[max], 'sidebarIdx', state.setSidebarCursorIndex)
+      return
+    }
+    if (
+      advanceSequence(
+        e,
+        getKeymapBinding(overrides, 'nav.jumpTop'),
+        jumpTopPending,
+        jumpTopTimer,
+        () => {
+          scrollToIndexedElement(items[0], 'sidebarIdx', state.setSidebarCursorIndex)
+        },
+        () => {
+          e.preventDefault()
+          e.stopImmediatePropagation()
+        },
+        300
+      )
+    ) {
+      return
+    }
+    if (key === 'Enter' || matchesSequenceToken(e, overrides, 'nav.openSideItem') || key === 'ArrowRight') {
+      activateSidebarItem(items[currentPos], state)
+      return
+    }
+    if (matchesSequenceToken(e, overrides, 'nav.back') || key === 'ArrowLeft') {
+      collapseSidebarItem(items[currentPos], state)
+      return
+    }
+    if (matchesSequenceToken(e, overrides, 'nav.toggleFolder')) {
+      toggleSidebarItem(items[currentPos], state)
+      return
+    }
+    if (key === 'Escape') {
+      focusEditor()
+      return
+    }
+    if (matchesSequenceToken(e, overrides, 'nav.filter')) {
+      state.setSearchOpen(true)
+      return
+    }
+    if (wantsContextMenu) {
+      openContextMenuForIndexedElement(items[currentPos])
+      return
+    }
+  }
+
+  function handleNoteListKey(e: KeyboardEvent, state: ReturnType<typeof useStore.getState>): void {
+    const key = e.key
+    const overrides = state.keymapOverrides
+    const items = getIndexedElements('[data-notelist-idx]', 'notelistIdx')
+    const count = getNoteListItemCount(items.length)
+    const max = count - 1
+    const currentIndex = clampIndex(state.noteListCursorIndex, count)
+    const wantsContextMenu =
+      matchesSequenceToken(e, overrides, 'nav.contextMenu') ||
+      wantsNativeContextMenuKey(e)
+
+    const wantsHandledKey =
+      matchesSequenceToken(e, overrides, 'nav.moveDown') ||
+      matchesSequenceToken(e, overrides, 'nav.moveUp') ||
+      matchesSequenceToken(e, overrides, 'nav.jumpBottom') ||
+      sequenceTokenFromEvent(e) === getSequenceTokens(overrides, 'nav.jumpTop')[0] ||
+      matchesSequenceToken(e, overrides, 'nav.openSideItem') ||
+      matchesSequenceToken(e, overrides, 'nav.back') ||
+      matchesSequenceToken(e, overrides, 'nav.filter') ||
+      key === 'Enter' ||
+      key === 'Escape' ||
+      key === 'ArrowDown' ||
+      key === 'ArrowUp' ||
+      key === 'ArrowLeft' ||
+      key === 'ArrowRight' ||
+      wantsContextMenu
+    if (wantsHandledKey) {
+      e.preventDefault()
+      e.stopImmediatePropagation()
+    } else {
+      return
+    }
+
+    if (count === 0) return
+
+    if (matchesSequenceToken(e, overrides, 'nav.moveDown') || key === 'ArrowDown') {
+      scrollToIndexedIndex(
+        items,
+        'notelistIdx',
+        moveIndex(currentIndex, count, 1),
+        state.setNoteListCursorIndex
+      )
+      return
+    }
+    if (matchesSequenceToken(e, overrides, 'nav.moveUp') || key === 'ArrowUp') {
+      scrollToIndexedIndex(
+        items,
+        'notelistIdx',
+        moveIndex(currentIndex, count, -1),
+        state.setNoteListCursorIndex
+      )
+      return
+    }
+    if (matchesSequenceToken(e, overrides, 'nav.jumpBottom')) {
+      scrollToIndexedIndex(items, 'notelistIdx', max, state.setNoteListCursorIndex)
+      return
+    }
+    if (
+      advanceSequence(
+        e,
+        getKeymapBinding(overrides, 'nav.jumpTop'),
+        jumpTopPending,
+        jumpTopTimer,
+        () => {
+          scrollToIndexedIndex(items, 'notelistIdx', 0, state.setNoteListCursorIndex)
+        },
+        () => {
+          e.preventDefault()
+          e.stopImmediatePropagation()
+        },
+        300
+      )
+    ) {
+      return
+    }
+    if (key === 'Enter' || matchesSequenceToken(e, overrides, 'nav.openSideItem') || key === 'ArrowRight') {
+      const el = getIndexedElementByIndex(items, 'notelistIdx', currentIndex)
+      if (!el) {
+        scrollToIndexedIndex(items, 'notelistIdx', currentIndex, state.setNoteListCursorIndex)
+        return
+      }
+      const path = el?.dataset.notelistPath
+      if (path) {
+        void state.selectNote(path)
+        focusEditor()
+      }
+      return
+    }
+    if (matchesSequenceToken(e, overrides, 'nav.back') || key === 'ArrowLeft') {
+      if (state.sidebarOpen) state.setFocusedPanel('sidebar')
+      return
+    }
+    if (key === 'Escape') {
+      focusEditor()
+      return
+    }
+    if (matchesSequenceToken(e, overrides, 'nav.filter')) {
+      state.setSearchOpen(true)
+      return
+    }
+    if (wantsContextMenu) {
+      const el = getIndexedElementByIndex(items, 'notelistIdx', currentIndex)
+      if (!el) {
+        scrollToIndexedIndex(items, 'notelistIdx', currentIndex, state.setNoteListCursorIndex)
+        return
+      }
+      openContextMenuForIndexedElement(el)
+      return
+    }
+  }
+
+  function handleConnectionsKey(e: KeyboardEvent, state: ReturnType<typeof useStore.getState>): void {
+    const key = e.key
+    const overrides = state.keymapOverrides
+    const items = getIndexedElements('[data-connections-idx]', 'connectionsIdx')
+    const count = items.length
+    const max = count - 1
+    const currentPos = findPositionByIndex(items, 'connectionsIdx', state.connectionsCursorIndex)
+    const wantsHandledKey =
+      matchesSequenceToken(e, overrides, 'nav.moveDown') ||
+      matchesSequenceToken(e, overrides, 'nav.moveUp') ||
+      matchesSequenceToken(e, overrides, 'nav.jumpBottom') ||
+      sequenceTokenFromEvent(e) === getSequenceTokens(overrides, 'nav.jumpTop')[0] ||
+      matchesSequenceToken(e, overrides, 'nav.openSideItem') ||
+      matchesSequenceToken(e, overrides, 'nav.back') ||
+      matchesSequenceToken(e, overrides, 'nav.peekPreview') ||
+      key === 'Enter' ||
+      key === 'Escape' ||
+      key === 'ArrowDown' ||
+      key === 'ArrowUp' ||
+      key === 'ArrowLeft' ||
+      key === 'ArrowRight'
+    if (wantsHandledKey) {
+      e.preventDefault()
+      e.stopImmediatePropagation()
+    } else {
+      return
+    }
+
+    if (count === 0) {
+      if (key === 'Escape' || matchesSequenceToken(e, overrides, 'nav.back') || key === 'ArrowLeft') {
+        state.setConnectionPreview(null)
+        focusEditor()
+      }
+      return
+    }
+
+    if (matchesSequenceToken(e, overrides, 'nav.moveDown') || key === 'ArrowDown') {
+      state.setConnectionPreview(null)
+      scrollToIndexedElement(
+        items[Math.min(currentPos + 1, max)],
+        'connectionsIdx',
+        state.setConnectionsCursorIndex
+      )
+      return
+    }
+    if (matchesSequenceToken(e, overrides, 'nav.moveUp') || key === 'ArrowUp') {
+      state.setConnectionPreview(null)
+      scrollToIndexedElement(
+        items[Math.max(currentPos - 1, 0)],
+        'connectionsIdx',
+        state.setConnectionsCursorIndex
+      )
+      return
+    }
+    if (matchesSequenceToken(e, overrides, 'nav.jumpBottom')) {
+      state.setConnectionPreview(null)
+      scrollToIndexedElement(items[max], 'connectionsIdx', state.setConnectionsCursorIndex)
+      return
+    }
+    if (
+      advanceSequence(
+        e,
+        getKeymapBinding(overrides, 'nav.jumpTop'),
+        jumpTopPending,
+        jumpTopTimer,
+        () => {
+          state.setConnectionPreview(null)
+          scrollToIndexedElement(items[0], 'connectionsIdx', state.setConnectionsCursorIndex)
+        },
+        () => {
+          e.preventDefault()
+          e.stopImmediatePropagation()
+        },
+        300
+      )
+    ) {
+      return
+    }
+    if (key === 'Enter' || matchesSequenceToken(e, overrides, 'nav.openSideItem') || key === 'ArrowRight') {
+      state.setConnectionPreview(null)
+      activateConnectionItem(items[currentPos], state)
+      return
+    }
+    if (matchesSequenceToken(e, overrides, 'nav.peekPreview')) {
+      openConnectionPreview(items[currentPos], state)
+      return
+    }
+    if (matchesSequenceToken(e, overrides, 'nav.back') || key === 'ArrowLeft' || key === 'Escape') {
+      state.setConnectionPreview(null)
+      focusEditor()
+      return
+    }
+  }
+
+  /**
+   * Outline panel navigation, mirroring the connections panel: j/k (or the
+   * arrows) walk the headings, Enter / l jumps the editor to the one under the
+   * cursor, h / Escape hands focus back. Before #477 the Outline was the one
+   * right-side panel keyboard navigation couldn't reach at all.
+   */
+  function handleOutlineKey(e: KeyboardEvent, state: ReturnType<typeof useStore.getState>): void {
+    const key = e.key
+    const overrides = state.keymapOverrides
+    const target = e.target instanceof HTMLElement ? e.target : null
+    // The heading filter is a real text field — let it keep its own keys.
+    if (target?.tagName === 'INPUT' || target?.tagName === 'TEXTAREA') return
+
+    const items = getIndexedElements('[data-outline-idx]', 'outlineIdx')
+    const max = items.length - 1
+    const currentPos = findPositionByIndex(items, 'outlineIdx', state.outlineCursorIndex)
+    const wantsHandledKey =
+      matchesSequenceToken(e, overrides, 'nav.moveDown') ||
+      matchesSequenceToken(e, overrides, 'nav.moveUp') ||
+      matchesSequenceToken(e, overrides, 'nav.jumpBottom') ||
+      sequenceTokenFromEvent(e) === getSequenceTokens(overrides, 'nav.jumpTop')[0] ||
+      matchesSequenceToken(e, overrides, 'nav.openSideItem') ||
+      matchesSequenceToken(e, overrides, 'nav.back') ||
+      key === 'Enter' ||
+      key === 'Escape' ||
+      key === 'ArrowDown' ||
+      key === 'ArrowUp' ||
+      key === 'ArrowLeft' ||
+      key === 'ArrowRight'
+    if (!wantsHandledKey) return
+    e.preventDefault()
+    e.stopImmediatePropagation()
+
+    if (items.length === 0) {
+      if (key === 'Escape' || matchesSequenceToken(e, overrides, 'nav.back') || key === 'ArrowLeft') {
+        focusEditor()
+      }
+      return
+    }
+
+    if (matchesSequenceToken(e, overrides, 'nav.moveDown') || key === 'ArrowDown') {
+      scrollToIndexedElement(items[Math.min(currentPos + 1, max)], 'outlineIdx', state.setOutlineCursorIndex)
+      return
+    }
+    if (matchesSequenceToken(e, overrides, 'nav.moveUp') || key === 'ArrowUp') {
+      scrollToIndexedElement(items[Math.max(currentPos - 1, 0)], 'outlineIdx', state.setOutlineCursorIndex)
+      return
+    }
+    if (matchesSequenceToken(e, overrides, 'nav.jumpBottom')) {
+      scrollToIndexedElement(items[max], 'outlineIdx', state.setOutlineCursorIndex)
+      return
+    }
+    if (
+      advanceSequence(
+        e,
+        getKeymapBinding(overrides, 'nav.jumpTop'),
+        jumpTopPending,
+        jumpTopTimer,
+        () => scrollToIndexedElement(items[0], 'outlineIdx', state.setOutlineCursorIndex),
+        () => {
+          e.preventDefault()
+          e.stopImmediatePropagation()
+        },
+        300
+      )
+    ) {
+      return
+    }
+    if (key === 'Enter' || matchesSequenceToken(e, overrides, 'nav.openSideItem') || key === 'ArrowRight') {
+      // The row owns the jump (EditorPane wires it to its own pane's view), so
+      // click it rather than re-deriving the target line here.
+      items[currentPos]?.click()
+      return
+    }
+    if (matchesSequenceToken(e, overrides, 'nav.back') || key === 'ArrowLeft' || key === 'Escape') {
+      focusEditor()
+    }
+  }
+
+  function handleCommentsKey(e: KeyboardEvent, state: ReturnType<typeof useStore.getState>): void {
+    const key = e.key
+    const overrides = state.keymapOverrides
+    const target = e.target instanceof HTMLElement ? e.target : null
+    const nativeButtonActivation =
+      !!target?.closest('[data-comment-card-control]') &&
+      (key === 'Enter' || key === ' ')
+    if (nativeButtonActivation) return
+
+    const items = getCommentItems()
+    const count = items.length
+    const max = count - 1
+    const currentPos = findCommentPosition(items, state.activeCommentId)
+    const wantsHandledKey =
+      matchesSequenceToken(e, overrides, 'nav.moveDown') ||
+      matchesSequenceToken(e, overrides, 'nav.moveUp') ||
+      matchesSequenceToken(e, overrides, 'nav.jumpBottom') ||
+      sequenceTokenFromEvent(e) === getSequenceTokens(overrides, 'nav.jumpTop')[0] ||
+      matchesSequenceToken(e, overrides, 'nav.openSideItem') ||
+      matchesSequenceToken(e, overrides, 'nav.back') ||
+      matchesSequenceToken(e, overrides, 'nav.filter') ||
+      key === 'Enter' ||
+      key === 'o' ||
+      key === 'e' ||
+      key === 'r' ||
+      key === 'd' ||
+      key === 'n' ||
+      key === '+' ||
+      key === 'Backspace' ||
+      key === 'Delete' ||
+      key === 'Escape' ||
+      key === 'ArrowDown' ||
+      key === 'ArrowUp' ||
+      key === 'ArrowLeft' ||
+      key === 'ArrowRight'
+    if (!wantsHandledKey) return
+
+    e.preventDefault()
+    e.stopImmediatePropagation()
+    if (state.focusedPanel !== 'comments') state.setFocusedPanel('comments')
+    document.querySelector<HTMLElement>('[data-comments-panel]')?.focus({ preventScroll: true })
+
+    if (key === 'Escape' || matchesSequenceToken(e, overrides, 'nav.back') || key === 'ArrowLeft') {
+      focusEditor()
+      return
+    }
+    if (key === 'n' || key === '+') {
+      document.querySelector<HTMLElement>('[data-comments-new]')?.click()
+      return
+    }
+    if (matchesSequenceToken(e, overrides, 'nav.filter')) {
+      state.setSearchOpen(true)
+      return
+    }
+
+    if (count === 0) return
+
+    if (matchesSequenceToken(e, overrides, 'nav.moveDown') || key === 'ArrowDown') {
+      scrollToCommentElement(items[Math.min(currentPos + 1, max)], state)
+      return
+    }
+    if (matchesSequenceToken(e, overrides, 'nav.moveUp') || key === 'ArrowUp') {
+      scrollToCommentElement(items[Math.max(currentPos - 1, 0)], state)
+      return
+    }
+    if (matchesSequenceToken(e, overrides, 'nav.jumpBottom')) {
+      scrollToCommentElement(items[max], state)
+      return
+    }
+    if (
+      advanceSequence(
+        e,
+        getKeymapBinding(overrides, 'nav.jumpTop'),
+        jumpTopPending,
+        jumpTopTimer,
+        () => {
+          scrollToCommentElement(items[0], state)
+        },
+        () => {
+          e.preventDefault()
+          e.stopImmediatePropagation()
+        },
+        300
+      )
+    ) {
+      return
+    }
+
+    const current = items[currentPos]
+    if (
+      key === 'Enter' ||
+      key === 'o' ||
+      key === 'ArrowRight' ||
+      matchesSequenceToken(e, overrides, 'nav.openSideItem')
+    ) {
+      activateCommentItem(current)
+      return
+    }
+    if (key === 'e') {
+      clickCommentAction(current, 'edit')
+      return
+    }
+    if (key === 'r') {
+      clickCommentAction(current, 'resolve')
+      return
+    }
+    if (key === 'd' || key === 'Backspace' || key === 'Delete') {
+      clickCommentAction(current, 'delete')
+    }
+  }
+
+  function handleTabsKey(e: KeyboardEvent, state: ReturnType<typeof useStore.getState>): void {
+    const key = e.key
+    const overrides = state.keymapOverrides
+    const leaf = findLeaf(state.paneLayout, state.activePaneId)
+    if (!leaf?.activeTab || leaf.tabs.length === 0 || !state.tabsEnabled || state.zenMode) {
+      focusEditor()
+      return
+    }
+
+    const wantsContextMenu =
+      matchesSequenceToken(e, overrides, 'nav.contextMenu') ||
+      wantsNativeContextMenuKey(e)
+    const wantsHandledKey =
+      key === 'h' ||
+      key === 'l' ||
+      key === 'j' ||
+      key === 'Enter' ||
+      key === 'Escape' ||
+      key === 'ArrowLeft' ||
+      key === 'ArrowRight' ||
+      key === 'ArrowDown' ||
+      wantsContextMenu
+    if (!wantsHandledKey) return
+
+    e.preventDefault()
+    e.stopImmediatePropagation()
+
+    const currentIdx = Math.max(0, leaf.tabs.indexOf(leaf.activeTab))
+    const scrollActiveTab = (): void => {
+      requestAnimationFrame(() => {
+        const target = findTabContextMenuTarget(leaf.id, useStore.getState().selectedPath ?? '')
+        target?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+      })
+    }
+
+    if (key === 'h' || key === 'ArrowLeft') {
+      const next = leaf.tabs[Math.max(0, currentIdx - 1)]
+      if (next) {
+        void state.focusTabInPane(leaf.id, next)
+        scrollActiveTab()
+      }
+      return
+    }
+    if (key === 'l' || key === 'ArrowRight') {
+      const next = leaf.tabs[Math.min(leaf.tabs.length - 1, currentIdx + 1)]
+      if (next) {
+        void state.focusTabInPane(leaf.id, next)
+        scrollActiveTab()
+      }
+      return
+    }
+    if (key === 'j' || key === 'ArrowDown' || key === 'Enter' || key === 'Escape') {
+      focusEditor()
+      return
+    }
+    if (wantsContextMenu) {
+      openActiveTabContextMenu(state)
+    }
+  }
+
+  function handleHoverPreviewKey(
+    e: KeyboardEvent,
+    previewEl: HTMLElement,
+    state: ReturnType<typeof useStore.getState>
+  ): void {
+    if (
+      e.key === 'Escape' ||
+      matchesSequenceToken(e, state.keymapOverrides, 'nav.back') ||
+      e.key === 'ArrowLeft'
+    ) {
+      e.preventDefault()
+      e.stopImmediatePropagation()
+      state.setConnectionPreview(null)
+      state.setFocusedPanel('connections')
+      requestAnimationFrame(() => {
+        const items = getIndexedElements('[data-connections-idx]', 'connectionsIdx')
+        const pos = findPositionByIndex(items, 'connectionsIdx', state.connectionsCursorIndex)
+        scrollToIndexedElement(items[pos], 'connectionsIdx', state.setConnectionsCursorIndex)
+      })
+      return
+    }
+    handlePreviewKey(e, previewEl, state, 'hoverpreview')
+  }
+
+  function handlePreviewKey(
+    e: KeyboardEvent,
+    previewEl: HTMLElement,
+    state: ReturnType<typeof useStore.getState>,
+    panel: 'editor' | 'hoverpreview' = 'editor'
+  ): void {
+    const key = e.key
+    const overrides = state.keymapOverrides
+    const navKeys = new Set([
+      'ArrowDown',
+      'ArrowUp',
+      'PageDown',
+      'PageUp',
+      'Home',
+      'End'
+    ])
+    const wantsHalfPageDown = matchesSequenceToken(e, overrides, 'nav.halfPageDown')
+    const wantsHalfPageUp = matchesSequenceToken(e, overrides, 'nav.halfPageUp')
+    const wantsContextMenu =
+      (matchesSequenceToken(e, overrides, 'nav.contextMenu') ||
+        wantsNativeContextMenuKey(e)) &&
+      !!getActiveTabContextMenuTarget(state)
+
+    if (
+      navKeys.has(key) ||
+      wantsHalfPageDown ||
+      wantsHalfPageUp ||
+      matchesSequenceToken(e, overrides, 'nav.moveDown') ||
+      matchesSequenceToken(e, overrides, 'nav.moveUp') ||
+      matchesSequenceToken(e, overrides, 'nav.jumpBottom') ||
+      sequenceTokenFromEvent(e) === getSequenceTokens(overrides, 'nav.jumpTop')[0] ||
+      matchesSequenceToken(e, overrides, 'nav.filter') ||
+      wantsContextMenu
+    ) {
+      e.preventDefault()
+      e.stopImmediatePropagation()
+    } else {
+      return
+    }
+
+    if (state.focusedPanel !== panel) state.setFocusedPanel(panel)
+
+    if (matchesSequenceToken(e, overrides, 'nav.moveDown') || key === 'ArrowDown') {
+      scrollPreviewBy(previewEl, getPreviewLineStep(previewEl))
+      return
+    }
+    if (matchesSequenceToken(e, overrides, 'nav.moveUp') || key === 'ArrowUp') {
+      scrollPreviewBy(previewEl, -getPreviewLineStep(previewEl))
+      return
+    }
+    if (key === 'PageDown' || wantsHalfPageDown) {
+      scrollPreviewBy(previewEl, getPreviewPageStep(previewEl))
+      return
+    }
+    if (key === 'PageUp' || wantsHalfPageUp) {
+      scrollPreviewBy(previewEl, -getPreviewPageStep(previewEl))
+      return
+    }
+    if (key === 'Home') {
+      scrollPreviewTo(previewEl, 0)
+      return
+    }
+    if (key === 'End' || matchesSequenceToken(e, overrides, 'nav.jumpBottom')) {
+      scrollPreviewTo(previewEl, previewEl.scrollHeight)
+      return
+    }
+    if (
+      advanceSequence(
+        e,
+        getKeymapBinding(overrides, 'nav.jumpTop'),
+        jumpTopPending,
+        jumpTopTimer,
+        () => {
+          scrollPreviewTo(previewEl, 0)
+        },
+        () => {
+          e.preventDefault()
+          e.stopImmediatePropagation()
+        },
+        300
+      )
+    ) {
+      return
+    }
+    if (matchesSequenceToken(e, overrides, 'nav.filter')) {
+      state.setSearchOpen(true)
+      return
+    }
+    if (wantsContextMenu) {
+      openActiveTabContextMenu(state)
+      return
+    }
+  }
+
+  // ---- Helpers ---------------------------------------------------------
+
+  function getPreviewScrollElement(): HTMLElement | null {
+    const visible = [
+      ...document.querySelectorAll<HTMLElement>('[data-preview-scroll]')
+    ].filter((el) => el.getClientRects().length > 0)
+    if (visible.length <= 1) return visible[0] ?? null
+    // With split panes there are several previews. Scroll the one in the ACTIVE
+    // pane, not just the first in DOM order (the top pane in a horizontal split),
+    // so j/k/scroll act on the pane the user is actually in. (#321)
+    const activePaneId = useStore.getState().activePaneId
+    const activePane = activePaneId
+      ? document.querySelector<HTMLElement>(`[data-pane-id="${CSS.escape(activePaneId)}"]`)
+      : null
+    return visible.find((el) => activePane?.contains(el)) ?? visible[0] ?? null
+  }
+
+  function getHoverPreviewScrollElement(): HTMLElement | null {
+    return [...document.querySelectorAll<HTMLElement>('[data-hover-preview-scroll]')].find(
+      (el) => el.getClientRects().length > 0
+    ) ?? null
+  }
+
+  function isPreviewNavigationActive(
+    previewEl: HTMLElement,
+    state: ReturnType<typeof useStore.getState>,
+    target: HTMLElement | null
+  ): boolean {
+    if (isEditorFocused(state.editorViewRef)) return false
+    if (target && previewEl.contains(target)) return true
+    const active = document.activeElement as HTMLElement | null
+    if (active && previewEl.contains(active)) return true
+    return state.focusedPanel === 'editor'
+  }
+
+  function getPreviewLineStep(previewEl: HTMLElement): number {
+    const content = previewEl.querySelector<HTMLElement>('[data-preview-content]')
+    const style = window.getComputedStyle(content ?? previewEl)
+    const lineHeight = Number.parseFloat(style.lineHeight)
+    if (Number.isFinite(lineHeight)) return Math.max(20, lineHeight)
+    const fontSize = Number.parseFloat(style.fontSize)
+    if (Number.isFinite(fontSize)) return Math.max(20, fontSize * 1.6)
+    return 28
+  }
+
+  function getPreviewPageStep(previewEl: HTMLElement): number {
+    return Math.max(96, Math.round(previewEl.clientHeight * 0.5))
+  }
+
+  function scrollPreviewBy(previewEl: HTMLElement, delta: number): void {
+    // Clamp explicitly instead of relying on the browser. scrollBy
+    // with `behavior: 'smooth'` can occasionally overshoot-then-snap
+    // on Chromium when two scroll requests collide (e.g. with the
+    // split-mode scroll sync), which reads as "jumped to the top"
+    // to the user at the end of the document.
+    const maxTop = Math.max(0, previewEl.scrollHeight - previewEl.clientHeight)
+    const epsilon = 1
+    const currentTop = Math.max(0, Math.min(maxTop, previewEl.scrollTop))
+    const nextTop = Math.max(0, Math.min(maxTop, currentTop + delta))
+    if (Math.abs(nextTop - currentTop) < epsilon) {
+      const settledTop = nextTop <= epsilon ? 0 : maxTop
+      // Chromium can keep a stale smooth-scroll animation alive at the
+      // boundary; settle the element explicitly so repeated Ctrl+D /
+      // Ctrl+U presses stop cleanly instead of appearing to wrap.
+      previewEl.scrollTo({ top: settledTop, behavior: 'auto' })
+      return
+    }
+    const smooth = useStore.getState().previewSmoothScroll
+    const hitsBoundary = nextTop <= epsilon || nextTop >= maxTop - epsilon
+    previewEl.scrollTo({
+      top: nextTop,
+      behavior: smooth && !hitsBoundary ? 'smooth' : 'auto'
+    })
+  }
+
+  function scrollPreviewTo(previewEl: HTMLElement, top: number): void {
+    const maxTop = Math.max(0, previewEl.scrollHeight - previewEl.clientHeight)
+    const clamped = Math.max(0, Math.min(maxTop, top))
+    previewEl.scrollTo({ top: clamped, behavior: 'auto' })
+  }
+
+
+
+
+  function getNoteListItemCount(renderedCount: number): number {
+    const raw = document.querySelector<HTMLElement>('[data-notelist-count]')?.dataset.notelistCount
+    const total = raw == null ? null : Number(raw)
+    return boundedIndexCount(renderedCount, total != null && Number.isFinite(total) ? total : null)
+  }
+
+  /** Find position in sorted items array by stored cursor index (no DOM focus dependency). */
+
+  /** Update the cursor index and scroll the element into view. */
+
+
+  function getCommentItems(): HTMLElement[] {
+    return getIndexedElements('[data-comments-idx]', 'commentsIdx')
+  }
+
+  function findCommentPosition(items: HTMLElement[], activeCommentId: string | null): number {
+    if (items.length === 0) return 0
+    if (!activeCommentId) return 0
+    const exact = items.findIndex((item) => item.dataset.commentId === activeCommentId)
+    return exact >= 0 ? exact : 0
+  }
+
+  function scrollToCommentElement(
+    el: HTMLElement | undefined,
+    state: ReturnType<typeof useStore.getState>
+  ): void {
+    if (!el) return
+    const commentId = el.dataset.commentId
+    if (commentId) state.setActiveCommentId(commentId)
+    el.scrollIntoView({ block: 'nearest' })
+  }
+
+  function focusCommentsPanel(state: ReturnType<typeof useStore.getState>): void {
+    const panel = document.querySelector<HTMLElement>('[data-comments-panel]')
+    panel?.focus({ preventScroll: true })
+    const items = getCommentItems()
+    if (items.length === 0) return
+    const pos = findCommentPosition(items, state.activeCommentId)
+    scrollToCommentElement(items[pos], state)
+  }
+
+  function activateCommentItem(el: HTMLElement | undefined): void {
+    if (!el) return
+    el.click()
+  }
+
+  function clickCommentAction(el: HTMLElement | undefined, action: string): void {
+    el?.querySelector<HTMLElement>(`[data-comment-action="${action}"]`)?.click()
+  }
+
+  function openContextMenuForIndexedElement(el: HTMLElement | undefined): void {
+    if (!el) return
+    dispatchKeyboardContextMenu(el)
+  }
+
+  function wantsNativeContextMenuKey(e: KeyboardEvent): boolean {
+    return e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')
+  }
+
+  function getActiveTabContextMenuTarget(
+    state: ReturnType<typeof useStore.getState>
+  ): HTMLElement | null {
+    const leaf = findLeaf(state.paneLayout, state.activePaneId)
+    if (!leaf?.activeTab) return null
+    return findTabContextMenuTarget(leaf.id, leaf.activeTab)
+  }
+
+  function openActiveTabContextMenu(
+    state: ReturnType<typeof useStore.getState>
+  ): boolean {
+    const target = getActiveTabContextMenuTarget(state)
+    if (!target) return false
+    state.setFocusedPanel('editor')
+    dispatchKeyboardContextMenu(target)
+    return true
+  }
+
+  // Toggle a nested-tag tree node, then keep the roving cursor on it once the
+  // tree re-renders (the row's index shifts as siblings appear/disappear). (#439)
+  function toggleTagNodeKeepingCursor(
+    tag: string,
+    state: ReturnType<typeof useStore.getState>
+  ): void {
+    state.toggleCollapseTagNode(tag)
+    requestAnimationFrame(() => {
+      const fresh = document.querySelector<HTMLElement>(
+        `[data-sidebar-type="tag"][data-sidebar-tag="${escapeForAttr(tag)}"]`
+      )
+      if (fresh) scrollToIndexedElement(fresh, 'sidebarIdx', state.setSidebarCursorIndex)
+    })
+  }
+
+  function activateSidebarItem(el: HTMLElement | undefined, state: ReturnType<typeof useStore.getState>): void {
+    if (!el) return
+    // #301: Daily/Weekly date groups aren't real folders — `l`/Enter/Right
+    // expands them via the store's date-nav state instead of navigating (which
+    // snapped the cursor to the parent) with a no-op collapse toggle.
+    const dateNavKey = el.dataset.sidebarDatenavKey
+    if (dateNavKey) {
+      state.expandDateNav(dateNavKey)
+      return
+    }
+    const itemType = el.dataset.sidebarType
+    if (itemType === 'folder') {
+      // A `<Name>.base` folder is a database. Its grid only opened through a
+      // real click (the database case lives in the row's click handler), so
+      // in Vim mode Enter/`l` fell into the plain-folder path below and the
+      // grid was mouse-only. Open it like the click does; expanding to browse
+      // the record notes stays on the chevron and the toggle-folder key.
+      const databaseCsv = el.dataset.sidebarDatabase
+      if (databaseCsv) {
+        state.setFocusedPanel('editor')
+        void state.openDatabase(databaseCsv)
+        return
+      }
+      const folder = el.dataset.sidebarFolder as 'inbox' | 'quick' | 'archive' | 'trash'
+      const subpath = el.dataset.sidebarSubpath ?? ''
+      state.setView({ kind: 'folder', folder, subpath })
+      const collapseKey = el.dataset.sidebarKey
+      if (collapseKey && state.collapsedFolders.includes(collapseKey)) {
+        state.toggleCollapseFolder(collapseKey)
+      }
+    } else if (itemType === 'note') {
+      const path = el.dataset.sidebarPath
+      if (path) {
+        state.setFocusedPanel('editor')
+        void state.selectNote(path).then(() => {
+          // Focus after the note loads and the editor becomes visible
+          requestAnimationFrame(() => {
+            useStore.getState().editorViewRef?.focus()
+          })
+        })
+      }
+    } else if (itemType === 'tag') {
+      const tag = el.dataset.sidebarTag
+      if (!tag) return
+      const expandable = el.dataset.sidebarTagExpandable === '1'
+      const real = el.dataset.sidebarTagReal === '1'
+      // A real tag selects (and reveals its subtree, if any). A pure grouping
+      // node has nothing to select, so activating it just expands/collapses. (#439)
+      if (real) {
+        if (expandable && state.collapsedTagNodes.includes(tag)) {
+          state.toggleCollapseTagNode(tag)
+        }
+        void state.openTagView(tag)
+      } else if (expandable) {
+        toggleTagNodeKeepingCursor(tag, state)
+      }
+    } else if (itemType === 'vault') {
+      openContextMenuForIndexedElement(el)
+    } else if (itemType === 'tasks') {
+      // Tasks is a top-level sidebar row that opens the vault-wide Tasks
+      // tab in the active pane. Matches clicking the row.
+      void state.openTasksView()
+    } else if (itemType === 'help') {
+      void state.openHelpView()
+    } else if (itemType === 'settings') {
+      state.setSettingsOpen(true)
+    } else if (itemType === 'archive') {
+      void state.openArchiveView()
+    } else if (itemType === 'trash') {
+      void state.openTrashView()
+    } else if (itemType === 'assets') {
+      void state.openAssetsView()
+    }
+  }
+
+  function activateConnectionItem(el: HTMLElement | undefined, state: ReturnType<typeof useStore.getState>): void {
+    if (!el) return
+    const type = el.dataset.connectionsType
+    if (type === 'note') {
+      const path = el.dataset.connectionsPath
+      if (!path) return
+      state.setConnectionPreview(null)
+      state.setFocusedPanel('editor')
+      void state.selectNote(path).then(() => {
+        requestAnimationFrame(() => {
+          useStore.getState().editorViewRef?.focus()
+        })
+      })
+      return
+    }
+    if (type === 'missing') {
+      el.click()
+    }
+  }
+
+  function openConnectionPreview(el: HTMLElement | undefined, state: ReturnType<typeof useStore.getState>): void {
+    if (!el || el.dataset.connectionsType !== 'note') return
+    const path = el.dataset.connectionsPath
+    if (!path) return
+    const note = state.notes.find((item) => item.path === path)
+    if (!note) return
+    const rect = el.getBoundingClientRect()
+    state.setConnectionPreview({
+      path: note.path,
+      title: note.title,
+      anchorRect: {
+        left: rect.left,
+        top: rect.top,
+        right: rect.right,
+        bottom: rect.bottom,
+        width: rect.width,
+        height: rect.height
+      }
+    })
+    state.setFocusedPanel('hoverpreview')
+    requestAnimationFrame(() => {
+      const previewEl = getHoverPreviewScrollElement()
+      if (previewEl) {
+        previewEl.focus({ preventScroll: true })
+        return
+      }
+      requestAnimationFrame(() => {
+        getHoverPreviewScrollElement()?.focus({ preventScroll: true })
+      })
+    })
+  }
+
+  function collapseSidebarItem(el: HTMLElement | undefined, state: ReturnType<typeof useStore.getState>): void {
+    if (!el) return
+    // #301: collapse a Daily/Weekly date group via the store's date-nav state.
+    const dateNavKey = el.dataset.sidebarDatenavKey
+    if (dateNavKey) {
+      state.collapseDateNav(dateNavKey)
+      return
+    }
+
+    // Nested-tag node: collapse if expanded, otherwise hop to the parent node
+    // (mirrors how `h` on a note steps out to its folder). (#439)
+    if (el.dataset.sidebarType === 'tag') {
+      const tag = el.dataset.sidebarTag
+      if (!tag) return
+      const expandable = el.dataset.sidebarTagExpandable === '1'
+      if (expandable && !state.collapsedTagNodes.includes(tag)) {
+        toggleTagNodeKeepingCursor(tag, state)
+        return
+      }
+      const slash = tag.lastIndexOf('/')
+      if (slash >= 0) {
+        const parentEl = document.querySelector<HTMLElement>(
+          `[data-sidebar-type="tag"][data-sidebar-tag="${escapeForAttr(tag.slice(0, slash))}"]`
+        )
+        if (parentEl) scrollToIndexedElement(parentEl, 'sidebarIdx', state.setSidebarCursorIndex)
+      }
+      return
+    }
+
+    const collapseFolder = (folderEl: HTMLElement | null): void => {
+      if (!folderEl) return
+      const collapseKey = folderEl.dataset.sidebarKey
+      const focusFolderRow = (): void => {
+        const freshFolderEl = collapseKey
+          ? document.querySelector<HTMLElement>(
+              `[data-sidebar-type="folder"][data-sidebar-key="${escapeForAttr(collapseKey)}"]`
+            )
+          : folderEl
+        if (!freshFolderEl) return
+        scrollToIndexedElement(freshFolderEl, 'sidebarIdx', state.setSidebarCursorIndex)
+      }
+
+      if (collapseKey && !state.collapsedFolders.includes(collapseKey)) {
+        state.toggleCollapseFolder(collapseKey)
+        requestAnimationFrame(() => {
+          focusFolderRow()
+        })
+        return
+      }
+
+      focusFolderRow()
+    }
+
+    if (el.dataset.sidebarType === 'folder') {
+      collapseFolder(el)
+      return
+    }
+
+    if (el.dataset.sidebarType !== 'note') return
+    const path = el.dataset.sidebarPath
+    if (!path) return
+
+    const parts = path.split('/')
+    const folder = parts[0]
+    const subpath = parts.slice(1, -1).join('/')
+    const parentFolderEl = document.querySelector<HTMLElement>(
+      `[data-sidebar-type="folder"][data-sidebar-folder="${folder}"][data-sidebar-subpath="${escapeForAttr(subpath)}"]`
+    )
+    collapseFolder(parentFolderEl)
+  }
+
+  function toggleSidebarItem(el: HTMLElement | undefined, state: ReturnType<typeof useStore.getState>): void {
+    if (!el) return
+    // #301: toggle a Daily/Weekly date group via the store's date-nav state.
+    const dateNavKey = el.dataset.sidebarDatenavKey
+    if (dateNavKey) {
+      state.toggleDateNav(dateNavKey)
+      return
+    }
+    if (el.dataset.sidebarType === 'tag') {
+      const tag = el.dataset.sidebarTag
+      if (tag && el.dataset.sidebarTagExpandable === '1') toggleTagNodeKeepingCursor(tag, state)
+      return
+    }
+    if (el.dataset.sidebarType !== 'folder') return
+    const collapseKey = el.dataset.sidebarKey
+    if (collapseKey) state.toggleCollapseFolder(collapseKey)
+  }
+
+  if (!vimMode) return null
+
+  if (hintActive) {
+    return <HintOverlay onActivate={exitHints} onCancel={cancelHints} />
+  }
+
+  if (whichKeyHintsEnabled && whichKeyState) {
+    const leaderDisplay = getKeymapDisplay(keymapOverrides, 'vim.leaderPrefix')
+    const noteActionsDisplay = getKeymapDisplay(keymapOverrides, 'vim.leaderNoteActions')
+    const searchGroupDisplay = getKeymapDisplay(keymapOverrides, 'vim.leaderSearchGroup')
+    const subPrefix =
+      whichKeyState.stage === 'leader-s' ? searchGroupDisplay : noteActionsDisplay
+    return (
+      <WhichKeyOverlay
+        prefix={whichKeyState.stage === 'leader' ? leaderDisplay : `${leaderDisplay} ${subPrefix}`}
+        title={
+          whichKeyState.stage === 'leader'
+            ? 'Leader'
+            : whichKeyState.stage === 'leader-s'
+              ? 'Leader · Search'
+              : 'Leader · Note Actions'
+        }
+        detail={
+          stickyWhichKeyHints
+            ? `Press a key to continue. Press ${leaderDisplay} again or Esc to close.`
+            : 'Press a key to continue or Esc to cancel.'
+        }
+        items={whichKeyItems}
+      />
+    )
+  }
+
+  return null
+}

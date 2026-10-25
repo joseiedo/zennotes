@@ -1,0 +1,43 @@
+{
+  "name": "zennotes-monorepo",
+  "private": true,
+  "version": "2.38.0",
+  "description": "ZenNotes monorepo for desktop, web, and self-hosted server builds",
+  "packageManager": "npm@10.9.2",
+  "engines": {
+    "node": ">=22"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev:desktop",
+    "dev:desktop": "npm run dev --workspace @zennotes/desktop",
+    "dev:web": "npm run dev --workspace @zennotes/web",
+    "dev:server": "npm run dev --workspace @zennotes/server",
+    "dev:web-stack": "node tooling/scripts/dev-web-stack.mjs",
+    "start": "npm run start --workspace @zennotes/desktop",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "test:run": "turbo run test:run",
+    "build": "turbo run build --filter=!@zennotes/server && npm run build --workspace @zennotes/server",
+    "build:prod": "npm run typecheck && npm run test:run && npm run build",
+    "perf:bench": "node tooling/scripts/perf-large-vault.mjs",
+    "perf:desktop-runtime": "node tooling/scripts/perf-desktop-runtime.mjs",
+    "perf:runtime-repeat": "node tooling/scripts/perf-runtime-repeat.mjs",
+    "perf:web-runtime": "node tooling/scripts/perf-web-runtime.mjs",
+    "test:sidebar-vim": "node tooling/scripts/sidebar-vim-smoke.mjs",
+    "test:vim-editor": "node tooling/scripts/vim-editor-smoke.mjs",
+    "test:editor-improvements": "node tooling/scripts/editor-improvements-smoke.mjs",
+    "verify:channels": "node tooling/scripts/verify-release-channels.mjs",
+    "pack": "npm run pack --workspace @zennotes/desktop",
+    "dist:mac": "npm run dist:mac --workspace @zennotes/desktop",
+    "dist:win": "npm run dist:win --workspace @zennotes/desktop",
+    "dist:linux": "npm run dist:linux --workspace @zennotes/desktop",
+    "perf:editor-scroll": "node tooling/scripts/perf-editor-scroll.mjs"
+  },
+  "devDependencies": {
+    "turbo": "^2.5.8"
+  }
+}

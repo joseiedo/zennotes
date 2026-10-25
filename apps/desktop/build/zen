@@ -1,0 +1,68 @@
+#!/bin/sh
+# zen — POSIX wrapper for the ZenNotes CLI.
+#
+# Installed by ZenNotes (Settings -> CLI -> Install) as a symlink at
+# /usr/local/bin/zen pointing at this file inside the .app bundle. When
+# invoked, we set ELECTRON_RUN_AS_NODE=1 and exec the packaged Electron
+# binary against the bundled cli.js, so the user does not need a system
+# Node install.
+#
+# Layout assumed (macOS .app bundle):
+#   <Bundle>/Contents/Resources/zen        (this script)
+#   <Bundle>/Contents/Resources/cli.js     (bundled JS, ESM)
+#   <Bundle>/Contents/MacOS/<Executable>   (Electron binary)
+#
+# On Linux AppImage / unpacked builds the layout differs slightly:
+#   <root>/resources/zen
+#   <root>/resources/cli.js
+#   <root>/<Executable>
+# We resolve relative to whichever pattern matches.
+
+set -e
+
+# Follow symlinks so we work whether the user invokes /usr/local/bin/zen
+# (a symlink) or the resource path directly.
+SOURCE="$0"
+while [ -h "$SOURCE" ]; do
+  TARGET="$(readlink "$SOURCE")"
+  case "$TARGET" in
+    /*) SOURCE="$TARGET" ;;
+    *)  SOURCE="$(dirname "$SOURCE")/$TARGET" ;;
+  esac
+done
+SCRIPT_DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
+
+CLI_JS="$SCRIPT_DIR/cli.js"
+if [ ! -f "$CLI_JS" ]; then
+  echo "zen: cli.js not found next to wrapper at $CLI_JS" >&2
+  exit 2
+fi
+
+# Find the Electron executable. Try the macOS layout first (script lives
+# in Contents/Resources, executable in Contents/MacOS), then the Linux
+# layout (script in resources/, executable in the parent).
+APP_BUNDLE="$(cd "$SCRIPT_DIR/.." && pwd)"
+ELECTRON=""
+if [ -d "$APP_BUNDLE/MacOS" ]; then
+  for candidate in "$APP_BUNDLE/MacOS"/*; do
+    if [ -x "$candidate" ]; then
+      ELECTRON="$candidate"
+      break
+    fi
+  done
+fi
+if [ -z "$ELECTRON" ]; then
+  # Linux unpacked: <root>/<exe> with <root>/resources/zen
+  for candidate in "$APP_BUNDLE"/zennotes "$APP_BUNDLE"/ZenNotes "$APP_BUNDLE"/zen-notes; do
+    if [ -x "$candidate" ]; then
+      ELECTRON="$candidate"
+      break
+    fi
+  done
+fi
+if [ -z "$ELECTRON" ]; then
+  echo "zen: could not locate the ZenNotes Electron binary near $APP_BUNDLE" >&2
+  exit 2
+fi
+
+ELECTRON_RUN_AS_NODE=1 exec "$ELECTRON" "$CLI_JS" "$@"

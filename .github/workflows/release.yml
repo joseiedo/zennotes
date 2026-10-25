@@ -1,0 +1,144 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  create-release:
+    name: Create GitHub release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create release if missing
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "Release ${GITHUB_REF_NAME} already exists."
+          else
+            gh release create "${GITHUB_REF_NAME}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "ZenNotes ${GITHUB_REF_NAME}" \
+              --notes "Download the installer for your platform from the assets below."
+          fi
+
+  build-and-upload:
+    name: Release ${{ matrix.name }}
+    needs: create-release
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS
+            os: macos-latest
+            command: npm run dist:mac
+          - name: Windows
+            os: windows-latest
+            command: npm run dist:win
+          - name: Linux x64
+            os: ubuntu-latest
+            command: npm run dist:linux
+          - name: Linux arm64
+            # GitHub's free arm64 Linux runner for public repos. This should 
+            # produce native aarch64 artifacts with no cross-compilation.
+            os: ubuntu-24.04-arm
+            command: npm run dist:linux
+    env:
+      NODE_OPTIONS: "--max-old-space-size=12288"
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      CSC_LINK: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+      CSC_KEY_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+      CSC_NAME: "Lumary Labs LLC (WYY7PK57DM)"
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      WIN_CSC_LINK: ${{ secrets.WINDOWS_CERTIFICATE_P12 }}
+      WIN_CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+      REQUIRE_MAC_SIGNING: "true"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify mac signing secrets
+        if: matrix.name == 'macOS'
+        shell: bash
+        run: |
+          required=(CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID)
+          for var in "${required[@]}"; do
+            if [ -z "${!var}" ]; then
+              echo "Missing required macOS release secret: ${var}" >&2
+              exit 1
+            fi
+          done
+
+      - name: Install Linux packaging tools
+        if: startsWith(matrix.name, 'Linux')
+        # `bsdtar` (libarchive-tools) is required by electron-builder's pacman
+        # target to generate the package .MTREE; `rpmbuild` (rpm) backs the rpm
+        # target. Neither is on the GitHub Ubuntu runners (x64 or arm64).
+        #
+        # electron-builder's *bundled* fpm is an ancient x86 build (1.9.3, 2015):
+        # it can't run on the arm64 runner at all ("Exec format error"), and it
+        # is too old to emit an rpm that modern rpmbuild accepts on either arch
+        # (verified on macOS: bundled fpm -> rpmbuild exit 1; system fpm -> ok).
+        # So install a current fpm from RubyGems on BOTH runners and switch
+        # electron-builder to it via USE_SYSTEM_FPM (it also builds deb/pacman).
+        run: |
+          # The GitHub Ubuntu runners ship pre-configured Microsoft/azure-cli apt
+          # repos (packages.microsoft.com) that intermittently serve a broken,
+          # unsigned InRelease, which makes `apt-get update` exit 100 and fails
+          # the Linux build for reasons unrelated to us. We only need the Ubuntu
+          # archives here, so drop those third-party lists first.
+          sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list \
+                     /etc/apt/sources.list.d/azure-cli.list \
+                     /etc/apt/sources.list.d/*microsoft* \
+                     /etc/apt/sources.list.d/*azure* 2>/dev/null || true
+          sudo apt-get update
+          # libarchive-tools -> bsdtar (pacman .MTREE); rpm -> rpmbuild (rpm
+          # target); ruby toolchain -> a current fpm from RubyGems.
+          sudo apt-get install -y libarchive-tools rpm ruby ruby-dev build-essential
+          sudo gem install fpm --no-document
+          echo "USE_SYSTEM_FPM=true" >> "$GITHUB_ENV"
+
+      - name: Build release artifacts
+        run: ${{ matrix.command }}
+
+      - name: Upload assets to GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          files=()
+          while IFS= read -r file; do
+            files+=("$file")
+          done < <(
+            find dist -maxdepth 1 -type f \
+              \( -name '*.dmg' -o -name '*.zip' -o -name '*.exe' -o -name '*.AppImage' -o -name '*.deb' -o -name '*.pacman' -o -name '*.rpm' -o -name '*.tar.gz' -o -name '*.blockmap' -o -name 'latest*.yml' -o -name 'latest*.yaml' \)
+          )
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No release artifacts found in dist/" >&2
+            exit 1
+          fi
+
+          gh release upload "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --clobber \
+            "${files[@]}"

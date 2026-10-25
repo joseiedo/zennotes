@@ -1,0 +1,15 @@
+{
+  "name": "@zennotes/shared-ui",
+  "private": true,
+  "version": "2.38.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "build": "tsc --noEmit -p tsconfig.json",
+    "test": "echo 'No shared-ui tests yet'",
+    "test:run": "echo 'No shared-ui tests yet'"
+  }
+}
