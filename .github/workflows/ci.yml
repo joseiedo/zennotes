@@ -13,19 +13,12 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Self-hosted only: the image is built (and, on main, pushed) by
+# ghcr-publish.yml, so this job just checks the code.
 jobs:
   build:
-    name: Build (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os:
-          - ubuntu-latest
-          # GitHub's free arm64 Linux runner for public repos.
-          - ubuntu-24.04-arm
-          - macos-latest
-          - windows-latest
+    name: Typecheck, test and build
+    runs-on: ubuntu-latest
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
@@ -39,18 +32,18 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          # Pin a modern Go instead of go.mod's `go 1.22`: the 1.22 macOS
-          # linker omits the LC_UUID load command, which the updated
-          # macos-latest dyld now rejects ("missing LC_UUID", abort trap) when
-          # launching `go test` binaries. go.mod stays at 1.22 (its real
-          # minimum), so Nix/release builds are unaffected.
-          go-version: stable
+          go-version-file: apps/server/go.mod
           cache-dependency-path: apps/server/go.sum
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Typecheck and build app
+      - name: Typecheck, test and build
         env:
           GOCACHE: ${{ runner.temp }}/go-build-cache
         run: npm run build:prod
+
+      # After the build: apps/server/web embeds the web bundles it produces.
+      - name: Go vet
+        working-directory: apps/server
+        run: go vet ./...
