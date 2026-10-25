@@ -162,13 +162,19 @@ body {
 }
 
 /* Plain images: app-core frames them like editor blocks (border, tint, accent
- * on hover, rounded corners); the reader shows the bare image. */
+ * on hover); the reader shows the bare image. The corners are rounded on the
+ * image, not the frame: the frame spans the column, so on a narrower image its
+ * corners would round empty space and leave the image square. */
 .zn-note .local-image-embed-frame,
 .zn-note .local-image-embed:hover .local-image-embed-frame {
   border: 0;
   border-radius: 0;
   background: none;
   box-shadow: none;
+}
+
+.zn-note .local-image-embed-frame .local-image-embed-image {
+  border-radius: 14px;
 }
 
 /* Read-only: no "expand diagram" modal on the public site. */
