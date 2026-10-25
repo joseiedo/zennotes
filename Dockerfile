@@ -21,7 +21,6 @@ COPY packages/app-core/package.json packages/app-core/package.json
 COPY packages/bridge-contract/package.json packages/bridge-contract/package.json
 COPY packages/shared-domain/package.json packages/shared-domain/package.json
 COPY packages/shared-ui/package.json packages/shared-ui/package.json
-COPY apps/desktop/package.json apps/desktop/package.json
 COPY apps/server/package.json apps/server/package.json
 
 RUN npm ci --no-audit --no-fund --loglevel=error

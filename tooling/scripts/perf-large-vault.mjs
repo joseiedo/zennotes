@@ -5,10 +5,6 @@ const benches = [
   {
     workspace: '@zennotes/app-core',
     spec: 'src/lib/app-core.perf.test.ts'
-  },
-  {
-    workspace: '@zennotes/desktop',
-    spec: 'src/main/vault.perf.test.ts'
   }
 ]
 

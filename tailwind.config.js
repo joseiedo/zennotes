@@ -1,7 +1,6 @@
 /** @type {import('tailwindcss').Config} */
 export default {
   content: [
-    './apps/desktop/src/renderer/index.html',
     './apps/web/index.html',
     './packages/app-core/src/**/*.{ts,tsx}'
   ],

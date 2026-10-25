@@ -7,8 +7,8 @@ ALLOW_INSECURE_NOAUTH ?= 0
 COMPOSE := $(shell docker compose version >/dev/null 2>&1 && echo "docker compose" || echo "docker-compose")
 OPEN_BROWSER := $(shell command -v open 2>/dev/null || command -v xdg-open 2>/dev/null)
 
-.PHONY: help install dev desktop web-dev server-dev web-stack \
-	build desktop-build web-build server-build \
+.PHONY: help install dev web-dev server-dev web-stack \
+	build web-build server-build \
 	up down restart logs status open rebuild nuke clean
 
 help:
@@ -17,14 +17,13 @@ help:
 	@echo "    make install      — install npm workspace dependencies"
 	@echo ""
 	@echo "  Local development"
-	@echo "    make desktop      — run the Electron desktop app in dev mode"
-	@echo "    make web-dev      — run the Vite web client in dev mode"
+	@echo "    make dev          — run server + web dev together"
+	@echo "    make web-dev     — run the Vite web client in dev mode"
 	@echo "    make server-dev   — run the Go server in dev mode"
 	@echo "    make web-stack    — run server + web dev together"
 	@echo ""
 	@echo "  Local builds"
 	@echo "    make build        — build the full monorepo"
-	@echo "    make desktop-build — build the Electron desktop app"
 	@echo "    make web-build    — build apps/web"
 	@echo "    make server-build — build apps/server with the latest embedded web bundle"
 	@echo ""
@@ -48,10 +47,7 @@ help:
 install:
 	npm ci
 
-dev: desktop
-
-desktop:
-	npm run dev:desktop
+dev: web-stack
 
 web-dev:
 	npm run dev:web
@@ -64,9 +60,6 @@ web-stack:
 
 build:
 	npm run build
-
-desktop-build:
-	npm run build --workspace @zennotes/desktop
 
 web-build:
 	npm run build --workspace @zennotes/web
