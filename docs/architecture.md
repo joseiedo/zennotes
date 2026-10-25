@@ -1,46 +1,24 @@
-# Runtime and Package Map
+# Architecture
 
 This document describes the repo layout and what each major app/package is responsible for.
+
+ZenNotes runs as a self-hosted web app: a browser frontend (`apps/web`) backed by a Go server (`apps/server`). The product UI lives in shared packages so the shells stay thin.
 
 ## Top-level layout
 
 ```text
 apps/
-  desktop/
-  web/
-  server/
+  web/       Vite shell, HTTP bridge, and the public-site reader bundle
+  server/    Go server: API, auth, vault access, public site, embedded web bundles
 packages/
-  app-core/
-  bridge-contract/
-  shared-domain/
-  shared-ui/
+  app-core/        Shared React application and renderer logic
+  bridge-contract/ Typed runtime contract between UI and host
+  shared-domain/   Shared types and note/task/view models
+  shared-ui/       Reusable UI primitives
 tooling/
-  scripts/
+  scripts/         Build, dev-stack and dist-sync helpers
 docs/
 ```
-
-## apps/desktop
-
-`apps/desktop` is the Electron shell.
-
-Responsibilities:
-
-- BrowserWindow lifecycle
-- preload bridge
-- native menus
-- updater
-- desktop packaging
-- local vault access
-- remote workspace client in the main process
-- desktop-only integrations such as floating windows and local file reveal
-
-Important scripts:
-
-- `npm run dev:desktop`
-- `npm run build --workspace @zennotes/desktop`
-- `npm run dist:mac`
-- `npm run dist:win`
-- `npm run dist:linux`
 
 ## apps/web
 
@@ -50,15 +28,21 @@ Responsibilities:
 
 - Vite development/build pipeline
 - browser bootstrapping
-- HTTP bridge that implements the same `window.zen` API shape for the shared UI
+- HTTP bridge that implements the `window.zen` API shape for the shared UI
+- the public-site reader (`public.html`, `src/public/`), built separately into `dist-public/` so no admin code ships to visitors
 
 Important point:
 
 The web app does not reimplement the product UI. It mounts the shared UI from `packages/app-core`.
 
+Important scripts:
+
+- `npm run dev:web`
+- `npm run build --workspace @zennotes/web` (builds both the admin and the public bundle)
+
 ## apps/server
 
-`apps/server` is the Go backend for self-hosted and future hosted modes.
+`apps/server` is the Go backend.
 
 Responsibilities:
 
@@ -68,7 +52,8 @@ Responsibilities:
 - directory browsing and vault selection
 - auth/session flow
 - security headers and CORS/origin checks
-- serving the embedded web bundle
+- serving the embedded web bundles
+- the opt-in public read-only site (`ZENNOTES_PUBLIC_SITE=1`): admin under the base path, public router at `/`
 
 Important scripts:
 
@@ -87,13 +72,10 @@ Responsibilities:
 - preview
 - command palette
 - sidebar
-- settings modal
+- settings modal (including the Public site panel)
 - tags/tasks/archive/trash views
 - quick notes
 - folder icons and sidebar customization
-- shared app behavior across desktop and web
-
-If a feature should behave the same on desktop and browser, it should usually live here.
 
 ## packages/bridge-contract
 
@@ -101,14 +83,12 @@ If a feature should behave the same on desktop and browser, it should usually li
 
 It describes:
 
-- app info and capabilities
-- vault operations
-- remote workspace operations
+- app info and capability flags for unsupported platform features
+- note, folder, asset and search operations
 - session operations
-- update state
 - watchers and events
 
-The UI depends on this interface instead of depending directly on Electron or raw fetch calls.
+The UI depends on this interface instead of depending directly on raw fetch calls.
 
 ## packages/shared-domain
 
@@ -117,8 +97,9 @@ The UI depends on this interface instead of depending directly on Electron or ra
 Examples:
 
 - tasks
-- MCP client state
-- shared domain types used across runtimes
+- workflows
+- public-site visibility rules (kept in step with the Go policy)
+- shared domain types used across the UI and server contract
 
 ## packages/shared-ui
 
@@ -134,29 +115,8 @@ Examples:
 
 - server build helpers
 - web stack orchestration
-- dist syncing/preparation scripts
+- dist syncing/preparation scripts (copying `apps/web/dist` and `dist-public` into the server's embed directory)
 - Windows-safe Go/Node wrapper scripts
-
-## Runtime model
-
-ZenNotes effectively runs in three product modes.
-
-### Desktop
-
-- UI from `app-core`
-- host bridge from Electron preload
-- local filesystem or remote server backend
-
-### Self-hosted web
-
-- UI from `app-core`
-- host bridge from the HTTP implementation
-- backend from the Go server
-
-### Future hosted mode
-
-- same web/server stack
-- additional auth/storage/deployment layers
 
 ## What should go where?
 
@@ -164,11 +124,5 @@ As a rule:
 
 - shared user-facing behavior -> `packages/app-core`
 - runtime contract -> `packages/bridge-contract`
-- desktop-only shell concerns -> `apps/desktop`
-- browser-only bootstrapping -> `apps/web`
+- browser-only bootstrapping and the public reader -> `apps/web`
 - server-side vault/network/security behavior -> `apps/server`
-
-## Related docs
-
-- [Monorepo Architecture](../monorepo-architecture.md)
-- [How ZenNotes Works](../explanation/how-zennotes-works.md)

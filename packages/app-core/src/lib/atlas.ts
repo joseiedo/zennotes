@@ -1,7 +1,7 @@
 // Atlas: the vault drawn as a map. Pure graph + layout logic, kept out of the
 // component so it is testable and could move to a worker later.
 //
-// Two hard rules from the design (docs/ideas/atlas.md):
+// Two hard rules from the design:
 //  - The layout is DETERMINISTIC and FROZEN. Same notes + links = same map.
 //  - Notes already on the map never move when new notes arrive; newcomers are
 //    placed at the centroid of their linked neighbors (or their region) so the

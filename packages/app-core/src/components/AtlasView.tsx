@@ -1,6 +1,6 @@
 // Atlas: the vault as a map of notes and links. Canvas-rendered (no per-note
 // DOM, per the sidebar-virtualization lesson), theme-driven via CSS variables,
-// with a 2D map and a 3D sky behind one toggle. Design: docs/ideas/atlas.md.
+// with a 2D map and a 3D sky behind one toggle.
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useStore, isAtlasViewActive } from '../store'
 import {
