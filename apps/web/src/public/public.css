@@ -162,10 +162,11 @@ body {
 }
 
 /* Plain images: app-core frames them like editor blocks (border, tint, accent
- * on hover); the reader just rounds the corners. */
+ * on hover, rounded corners); the reader shows the bare image. */
 .zn-note .local-image-embed-frame,
 .zn-note .local-image-embed:hover .local-image-embed-frame {
   border: 0;
+  border-radius: 0;
   background: none;
   box-shadow: none;
 }
