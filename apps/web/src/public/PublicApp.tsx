@@ -32,6 +32,47 @@ function useThemeMode(): ThemeMode {
   return mode
 }
 
+// Matches the drawer breakpoint in public.css.
+const NARROW_QUERY = '(max-width: 768px)'
+
+function useIsNarrow(): boolean {
+  const [narrow, setNarrow] = useState(
+    () => typeof window.matchMedia === 'function' && window.matchMedia(NARROW_QUERY).matches
+  )
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return
+    const mq = window.matchMedia(NARROW_QUERY)
+    const onChange = (): void => setNarrow(mq.matches)
+    mq.addEventListener('change', onChange)
+    return () => mq.removeEventListener('change', onChange)
+  }, [])
+  return narrow
+}
+
+const COLLAPSED_KEY = 'zn-public-nav-collapsed'
+
+/** Desktop sidebar collapse, remembered per browser. Storage can throw
+ *  (private mode, blocked site data); the sidebar then just starts open. */
+function useNavCollapsed(): [boolean, (next: boolean) => void] {
+  const [collapsed, setCollapsed] = useState(() => {
+    try {
+      return window.localStorage.getItem(COLLAPSED_KEY) === '1'
+    } catch {
+      return false
+    }
+  })
+  const update = useCallback((next: boolean) => {
+    setCollapsed(next)
+    try {
+      if (next) window.localStorage.setItem(COLLAPSED_KEY, '1')
+      else window.localStorage.removeItem(COLLAPSED_KEY)
+    } catch {
+      // ignore
+    }
+  }, [])
+  return [collapsed, update]
+}
+
 interface Loc {
   pathname: string
   hash: string
@@ -75,6 +116,14 @@ export function PublicApp(): JSX.Element {
   const [loc, setLoc] = useState<Loc>(currentLoc)
   const [view, setView] = useState<View>({ kind: 'loading' })
   const [navOpen, setNavOpen] = useState(false)
+  const [navCollapsed, setNavCollapsed] = useNavCollapsed()
+  const narrow = useIsNarrow()
+  // One button: the overlay drawer on narrow screens, the collapse on desktop.
+  const sidebarShown = narrow ? navOpen : !navCollapsed
+  const toggleSidebar = (): void => {
+    if (narrow) setNavOpen((o) => !o)
+    else setNavCollapsed(!navCollapsed)
+  }
 
   // The server pre-renders the note text for crawlers; the app replaces it.
   useEffect(() => {
@@ -151,13 +200,13 @@ export function PublicApp(): JSX.Element {
   const currentPath = view.kind === 'note' ? view.note.path : null
 
   return (
-    <div className={`zn-public${navOpen ? ' nav-open' : ''}`}>
+    <div className={`zn-public${navOpen ? ' nav-open' : ''}${navCollapsed ? ' nav-collapsed' : ''}`}>
       <button
         type="button"
         className="zn-nav-toggle"
-        aria-label={navOpen ? 'Hide notes' : 'Show notes'}
-        aria-expanded={navOpen}
-        onClick={() => setNavOpen((o) => !o)}
+        aria-label={sidebarShown ? 'Hide notes' : 'Show notes'}
+        aria-expanded={sidebarShown}
+        onClick={toggleSidebar}
       >
         <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
           <path d="M2 4h12M2 8h12M2 12h12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />

@@ -2,9 +2,14 @@
  * .prose-zen); this file only lays out the shell around the note. Colors are
  * ZenNotes theme tokens (--z-*), set by data-theme on <html>. */
 
+/* app-core's index.css pins html/body to the viewport with overflow hidden
+ * (the app scrolls inside panes); the public site scrolls the document. */
 html,
 body {
+  height: auto;
   margin: 0;
+  overflow: visible;
+  user-select: text;
   background: rgb(var(--z-bg));
   color: rgb(var(--z-fg));
 }
@@ -29,7 +34,7 @@ body {
   height: 100dvh;
   overflow-y: auto;
   box-sizing: border-box;
-  padding: 1rem 0.5rem 2rem;
+  padding: 3.25rem 0.5rem 2rem;
   background: rgb(var(--z-bg-softer));
   border-right: 1px solid rgb(var(--z-bg-2) / 0.7);
   font-size: 0.875rem;
@@ -156,22 +161,27 @@ body {
 }
 
 .zn-nav-toggle {
+  display: inline-flex;
+  position: fixed;
+  top: 0.75rem;
+  left: 0.75rem;
+  z-index: 30;
+  padding: 0.45rem;
+  border: 1px solid rgb(var(--z-bg-2));
+  border-radius: 0.5rem;
+  background: rgb(var(--z-bg-softer));
+  color: rgb(var(--z-fg));
+  cursor: pointer;
+}
+
+.zn-public.nav-collapsed .zn-sidebar {
   display: none;
 }
 
 @media (max-width: 768px) {
-  .zn-nav-toggle {
-    display: inline-flex;
-    position: fixed;
-    top: 0.75rem;
-    left: 0.75rem;
-    z-index: 30;
-    padding: 0.45rem;
-    border: 1px solid rgb(var(--z-bg-2));
-    border-radius: 0.5rem;
-    background: rgb(var(--z-bg-softer));
-    color: rgb(var(--z-fg));
-    cursor: pointer;
+  /* Narrow screens use the overlay drawer; the desktop collapse doesn't apply. */
+  .zn-public.nav-collapsed .zn-sidebar {
+    display: block;
   }
 
   .zn-sidebar {
