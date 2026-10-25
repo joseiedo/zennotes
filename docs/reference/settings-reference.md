@@ -419,7 +419,6 @@ local extension is installed, whether it matches the current ZenNotes version,
 and the local extension path. When ZenNotes ships a newer bundled extension, the
 same button changes from `Reinstall` to `Update`.
 
-Read [Use ZenNotes with Raycast on macOS](../how-to/use-raycast.md) for setup and troubleshooting.
 
 ## Remote/session behavior
 
