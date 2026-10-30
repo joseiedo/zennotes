@@ -760,6 +760,17 @@ function setPublicSiteConfig(input: {
   return jsonRequest<PublicSiteConfig>('/public-site', { method: 'PUT', body: input })
 }
 
+/** No-op on servers without the public site. */
+async function setPublicSiteTheme(theme: {
+  id: string
+  family: string
+  mode: string
+}): Promise<void> {
+  const capabilities = lastServerCapabilities ?? (await getServerCapabilities())
+  if (capabilities?.supportsPublicSite !== true) return
+  await jsonRequest<void>('/public-site/theme', { method: 'PUT', body: theme })
+}
+
 async function writeWorkflow(input: WriteWorkflowInput): Promise<WorkflowFile> {
   await requireServerWorkflowSupport()
   return jsonRequest<WorkflowFile>('/workflows/write', {
@@ -1437,6 +1448,7 @@ export const httpBridge: ZenBridge = {
   listWorkflows,
   getPublicSiteConfig,
   setPublicSiteConfig,
+  setPublicSiteTheme,
   writeWorkflow,
   deleteWorkflow,
   applyWorkflow,

@@ -104,3 +104,17 @@ func (s *Server) putPublicSite(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
+
+// putPublicSiteTheme stores the admin app's theme for the public site.
+func (s *Server) putPublicSiteTheme(w http.ResponseWriter, r *http.Request) {
+	var in publicsite.SiteTheme
+	if err := readJSON(r, &in); err != nil || !in.Valid() {
+		http.Error(w, "invalid theme", http.StatusBadRequest)
+		return
+	}
+	if err := s.publicRules.PutTheme(in); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}

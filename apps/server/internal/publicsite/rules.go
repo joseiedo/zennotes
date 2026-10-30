@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 )
@@ -26,8 +27,26 @@ type SiteRules struct {
 	Rules    map[string]Mark `json:"rules"`
 }
 
+// SiteTheme mirrors the admin app's theme so the public site renders in it.
+// ID is a built-in theme id (data-theme), Family its theme family, Mode
+// "light", "dark" or "auto" (auto follows the visitor's OS within Family).
+type SiteTheme struct {
+	ID     string `json:"id"`
+	Family string `json:"family"`
+	Mode   string `json:"mode"`
+}
+
+var themeTokenRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
+
+// Valid reports whether t only holds tokens that are safe to put in a page.
+func (t SiteTheme) Valid() bool {
+	return themeTokenRe.MatchString(t.ID) && themeTokenRe.MatchString(t.Family) &&
+		(t.Mode == "light" || t.Mode == "dark" || t.Mode == "auto")
+}
+
 type rulesFile struct {
 	Vaults map[string]SiteRules `json:"vaults"`
+	Theme  *SiteTheme           `json:"theme,omitempty"`
 }
 
 // Store persists rules for all vaults in one JSON file.
@@ -83,6 +102,32 @@ func validKey(k string) bool {
 		}
 	}
 	return true
+}
+
+// Theme returns the stored site theme; ok is false when none was set.
+func (s *Store) Theme() (SiteTheme, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t := s.load().Theme
+	if t == nil || !t.Valid() {
+		return SiteTheme{}, false
+	}
+	return *t, true
+}
+
+// PutTheme stores the site theme shared by all vaults.
+func (s *Store) PutTheme(t SiteTheme) error {
+	if !t.Valid() {
+		return fmt.Errorf("invalid theme %+v", t)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	f := s.load()
+	if f.Theme != nil && *f.Theme == t {
+		return nil
+	}
+	f.Theme = &t
+	return s.saveLocked(f)
 }
 
 // ErrStaleRules is returned by PutIfVersion when the rules changed since the

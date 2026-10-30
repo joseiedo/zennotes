@@ -77,3 +77,44 @@ func TestStoreRejectsBadKeys(t *testing.T) {
 		t.Fatal("file changed after rejected puts")
 	}
 }
+
+func TestStoreThemeRoundTripKeepsRules(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "public-site.json")
+	s := NewStore(path)
+	if _, ok := s.Theme(); ok {
+		t.Fatal("want no theme before one is set")
+	}
+	if err := s.Put("/v1", SiteRules{HomeNote: "a.md", Rules: map[string]Mark{"a.md": MarkPublic}}); err != nil {
+		t.Fatal(err)
+	}
+	want := SiteTheme{ID: "mocha", Family: "catppuccin", Mode: "auto"}
+	if err := s.PutTheme(want); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := NewStore(path).Theme(); !ok || got != want {
+		t.Fatalf("theme: got %+v %v, want %+v", got, ok, want)
+	}
+	if err := s.Put("/v1", SiteRules{HomeNote: "b.md"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.Theme(); got != want {
+		t.Fatalf("rules write dropped the theme: %+v", got)
+	}
+	if r := s.Get("/v1"); r.HomeNote != "b.md" {
+		t.Fatalf("rules: %+v", r)
+	}
+}
+
+func TestStoreRejectsBadTheme(t *testing.T) {
+	s := NewStore(filepath.Join(t.TempDir(), "public-site.json"))
+	for _, bad := range []SiteTheme{
+		{ID: "", Family: "gruvbox", Mode: "dark"},
+		{ID: `x"><script>`, Family: "gruvbox", Mode: "dark"},
+		{ID: "dark-hard", Family: "gruvbox", Mode: "night"},
+		{ID: "Dark-Hard", Family: "gruvbox", Mode: "dark"},
+	} {
+		if err := s.PutTheme(bad); err == nil {
+			t.Fatalf("accepted %+v", bad)
+		}
+	}
+}

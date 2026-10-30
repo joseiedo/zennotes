@@ -576,6 +576,17 @@ function App(): JSX.Element {
     return undefined
   }, [themeId, themeFamily, themeMode, customThemes])
 
+  // Mirror the theme onto the public site so it reads like the app. Custom
+  // themes are desktop-only CSS the server cannot serve, so they keep the
+  // public site on whatever built-in theme it had. Waits for the vault, i.e.
+  // until the server has let us in.
+  useEffect(() => {
+    if (!vault || isCustomThemeId(themeId)) return
+    void window.zen
+      .setPublicSiteTheme?.({ id: themeId, family: themeFamily, mode: themeMode })
+      .catch(() => {})
+  }, [vault, themeId, themeFamily, themeMode])
+
   // Inject the active custom theme's raw CSS (built-ins clear it). Reacts to
   // theme switches and to live edits arriving via the file watcher.
   useEffect(() => {

@@ -96,7 +96,15 @@ func injectHead(doc []byte, title string, tags string) []byte {
 		out = append(out, doc[loc[1]:]...)
 		doc = out
 	}
-	snippet := titleTag + tags
+	return insertBeforeHeadClose(doc, titleTag+tags)
+}
+
+// insertBeforeHeadClose inserts snippet right before </head>, or prepends it
+// when the template has none.
+func insertBeforeHeadClose(doc []byte, snippet string) []byte {
+	if snippet == "" {
+		return doc
+	}
 	if idx := indexOfFold(doc, []byte("</head>")); idx >= 0 {
 		out := make([]byte, 0, len(doc)+len(snippet))
 		out = append(out, doc[:idx]...)
@@ -125,10 +133,11 @@ func injectSEO(doc []byte, content string) []byte {
 func (s *Server) renderShell(page *PublicPage) []byte {
 	doc := s.publicShellTemplate()
 	if page == nil {
-		return doc
+		return insertBeforeHeadClose(doc, s.publicThemeTag())
 	}
 	esc := html.EscapeString
 	var tags strings.Builder
+	tags.WriteString(s.publicThemeTag())
 	tags.WriteString(`<meta name="description" content="` + esc(page.Description) + `">`)
 	tags.WriteString(`<meta property="og:title" content="` + esc(page.Title) + `">`)
 	tags.WriteString(`<meta property="og:description" content="` + esc(page.Description) + `">`)
@@ -145,5 +154,20 @@ func (s *Server) renderShell(page *PublicPage) []byte {
 
 // renderNotFoundShell is the one page-404 body: title "Not found", no meta.
 func (s *Server) renderNotFoundShell() []byte {
-	return injectHead(s.publicShellTemplate(), "Not found", "")
+	return injectHead(s.publicShellTemplate(), "Not found", s.publicThemeTag())
+}
+
+// publicThemeTag carries the admin app's theme to the public bundle, which
+// applies it before the first paint. Empty when no theme was set.
+func (s *Server) publicThemeTag() string {
+	if s.publicRules == nil {
+		return ""
+	}
+	t, ok := s.publicRules.Theme()
+	if !ok {
+		return ""
+	}
+	esc := html.EscapeString
+	return `<meta name="zn-theme" content="` + esc(t.ID) + `" data-family="` + esc(t.Family) +
+		`" data-mode="` + esc(t.Mode) + `">`
 }

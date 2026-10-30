@@ -234,6 +234,7 @@ func (s *Server) registerProtectedRoutes(r chi.Router) {
 	if s.publicRules != nil {
 		r.Get("/public-site", s.getPublicSite)
 		r.Put("/public-site", s.putPublicSite)
+		r.Put("/public-site/theme", s.putPublicSiteTheme)
 	}
 
 	r.Get("/vault", s.vaultInfo)

@@ -2,6 +2,7 @@ import { createRoot } from 'react-dom/client'
 import '@renderer/styles/index.css'
 import './public.css'
 import { PublicApp } from './PublicApp'
+import { readSiteTheme, resolveSiteTheme } from './theme'
 
 // Excalidraw loads its hand-drawn fonts from here (copied into dist-public by
 // the excalidrawFonts plugin); unset, it would fall back to a CDN the CSP blocks.
@@ -10,8 +11,9 @@ import { PublicApp } from './PublicApp'
 
 // Apply the theme before the first paint (PublicApp keeps it in sync).
 const dark = window.matchMedia?.('(prefers-color-scheme: dark)').matches === true
-document.documentElement.dataset.theme = dark ? 'dark-hard' : 'light-hard'
-document.documentElement.dataset.themeMode = dark ? 'dark' : 'light'
+const initial = resolveSiteTheme(readSiteTheme(), dark)
+document.documentElement.dataset.theme = initial.id
+document.documentElement.dataset.themeMode = initial.mode
 
 const root = document.getElementById('zn-root')
 if (!root) throw new Error('#zn-root not found')

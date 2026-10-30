@@ -172,6 +172,9 @@ export interface ZenBridge {
     /** `version` of the config this edit is based on. */
     version: string
   }): Promise<PublicSiteConfig>
+  /** Mirror the app's built-in theme onto the public site. Web only; a no-op
+   *  when the server has no public site. */
+  setPublicSiteTheme?(theme: { id: string; family: string; mode: string }): Promise<void>
   /** Create or overwrite a workflow file; returns the saved file. */
   writeWorkflow(input: WriteWorkflowInput): Promise<WorkflowFile>
   deleteWorkflow(sourcePath: string): Promise<void>

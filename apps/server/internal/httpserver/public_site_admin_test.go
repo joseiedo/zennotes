@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/ZenNotes/zennotes/apps/server/internal/config"
@@ -273,5 +274,43 @@ func TestPublicSiteAdminStaleTabCannotDropCarriedHiddenMark(t *testing.T) {
 	}
 	if got := s.publicRules.Get(root).Rules["Blog/Later"]; got != publicsite.MarkHidden {
 		t.Fatalf("carried hidden mark lost: %q", got)
+	}
+}
+
+func TestPublicSiteThemeReachesShell(t *testing.T) {
+	f := newPublicFixture(t, leakFixtureFiles(), leakFixtureRules(), "")
+	if strings.Contains(fetchRaw(t, f.srv, "/").Body, `name="zn-theme"`) {
+		t.Fatal("theme tag before a theme was set")
+	}
+	put := func(jar http.CookieJar, body string) int {
+		req, _ := http.NewRequest("PUT", f.srv.URL+"/admin/api/public-site/theme", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		client := &http.Client{}
+		if jar != nil {
+			client.Jar = jar
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	theme := `{"id":"mocha","family":"catppuccin","mode":"auto"}`
+	if code := put(nil, theme); code != http.StatusUnauthorized {
+		t.Fatalf("PUT no cookie: %d", code)
+	}
+	jar := loginAtBase(t, f.srv.URL+"/admin", "secret-token")
+	if code := put(jar, `{"id":"x\"><b>","family":"catppuccin","mode":"auto"}`); code != http.StatusBadRequest {
+		t.Fatalf("PUT bad theme: %d", code)
+	}
+	if code := put(jar, theme); code != http.StatusNoContent {
+		t.Fatalf("PUT theme: %d", code)
+	}
+	want := `<meta name="zn-theme" content="mocha" data-family="catppuccin" data-mode="auto">`
+	for _, p := range []string{"/", "/Blog/a", "/no-such-page"} {
+		if body := fetchRaw(t, f.srv, p).Body; !strings.Contains(body, want) {
+			t.Fatalf("%s: theme tag missing: %s", p, body)
+		}
 	}
 }

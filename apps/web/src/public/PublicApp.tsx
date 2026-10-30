@@ -5,30 +5,31 @@ import { fetchNote, fetchSite, type PublicNote, type PublicSite } from './api'
 import { NoteView, type ThemeMode } from './NoteView'
 import { NotFound } from './NotFound'
 import { Sidebar } from './Sidebar'
+import { readSiteTheme, resolveSiteTheme, siteThemeIsAuto } from './theme'
 import { pathFromUrl } from './tree'
-
-// ZenNotes' default theme family (Gruvbox Material, hard contrast) in the
-// mode the visitor's OS prefers. Tokens come from app-core's index.css.
-const THEME_ID: Record<ThemeMode, string> = { light: 'light-hard', dark: 'dark-hard' }
 
 function prefersDark(): boolean {
   return typeof window.matchMedia === 'function' && window.matchMedia('(prefers-color-scheme: dark)').matches
 }
 
+/** The admin app's theme (see theme.ts); an `auto` one tracks the visitor's
+ *  OS live. Tokens come from app-core's index.css. */
 function useThemeMode(): ThemeMode {
-  const [mode, setMode] = useState<ThemeMode>(() => (prefersDark() ? 'dark' : 'light'))
+  const [siteTheme] = useState(readSiteTheme)
+  const [dark, setDark] = useState(prefersDark)
   useEffect(() => {
-    if (typeof window.matchMedia !== 'function') return
+    if (!siteThemeIsAuto(siteTheme) || typeof window.matchMedia !== 'function') return
     const mq = window.matchMedia('(prefers-color-scheme: dark)')
-    const onChange = (): void => setMode(mq.matches ? 'dark' : 'light')
+    const onChange = (): void => setDark(mq.matches)
     mq.addEventListener('change', onChange)
     return () => mq.removeEventListener('change', onChange)
-  }, [])
+  }, [siteTheme])
+  const { id, mode } = resolveSiteTheme(siteTheme, dark)
   useEffect(() => {
     const html = document.documentElement
-    html.dataset.theme = THEME_ID[mode]
+    html.dataset.theme = id
     html.dataset.themeMode = mode
-  }, [mode])
+  }, [id, mode])
   return mode
 }
 
